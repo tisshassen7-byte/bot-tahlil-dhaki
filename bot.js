@@ -3,8 +3,12 @@ const TelegramBot = require('node-telegram-bot-api');
 const token = process.env.TELEGRAM_TOKEN;
 const bot = new TelegramBot(token, { polling: true });
 
-bot.on('message', (msg) => {
-  if (msg.from.is_bot) return;
+bot.on('message', async (msg) => {
+  if (msg.from && msg.from.is_bot) return;
 
-  bot.sendMessage(msg.chat.id, '🔥 البوت خدام يا حسان');
+  try {
+    await bot.sendMessage(msg.chat.id, '🔥 البوت خدام يا حسان');
+  } catch (err) {
+    console.log(err);
+  }
 });
