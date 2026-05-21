@@ -165,4 +165,4 @@ bot.on('callback_query', async (query) => {
   }
 });
 
-console.log('Bot real analysis ru
+console.log('Bot real analysis running...');
