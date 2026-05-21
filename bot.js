@@ -67,7 +67,18 @@ bot.on('message', async (msg) => {
         keyboard: [
           ['🔁 تحليل جديد'],
           ['🏠 الرئيسية']
-        ],
+        ],if (text === '🆕 تحليل جديد') {
+  bot.sendMessage(chatId, 'اختر نوع السوق:', {
+    reply_markup: {
+      keyboard: [
+        ['💎 OTC', '📈 سوق حقيقي']
+      ],
+      resize_keyboard: true
+    }
+  });
+  return;
+}
+});
         resize_keyboard: true
       }
     });
