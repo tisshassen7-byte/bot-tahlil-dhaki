@@ -1,5 +1,6 @@
+
 {
-  "name": "telegram-bot",
+  "name": "bot-tahlil-dhaki",
   "version": "1.0.0",
   "main": "bot.js",
   "scripts": {
