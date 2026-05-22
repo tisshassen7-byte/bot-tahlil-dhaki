@@ -1,12 +1,24 @@
+
+process.on('uncaughtException', console.error);
+process.on('unhandledRejection', console.error);
+
 const TelegramBot = require('node-telegram-bot-api');
 const http = require('http');
 
 const token = process.env.TELEGRAM_TOKEN;
 const apiKey = process.env.TWELVE_API_KEY;
 
-const bot = new TelegramBot(token, { polling: true, filepath: false });
-const sessions = {};
+const bot = new TelegramBot(token, {
+  polling: {
+    autoStart: true,
+    params: { timeout: 10 }
+  },
+  filepath: false
+});
 
+bot.deleteWebHook();
+
+const sessions = {};
 http.createServer((req, res) => {
   res.writeHead(200);
   res.end('Bot alive');
