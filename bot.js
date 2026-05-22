@@ -3,7 +3,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const token = process.env.TELEGRAM_TOKEN;
 const apiKey = process.env.TWELVE_API_KEY;
 
-const bot = new TelegramBot(token, { polling: true });
+const bot = new TelegramBot(token, { polling: true, filepath: false });
 const sessions = {};
 
 const assets = ['EUR/USD', 'GBP/USD', 'EUR/GBP', 'USD/JPY', 'AUD/JPY', 'CAD/JPY'];
