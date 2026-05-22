@@ -68,10 +68,9 @@ function rsi(values, period = 14) {
 }
 
 function getGrade(confidence) {
-  if (confidence >= 90) return 'A+';
-  if (confidence >= 80) return 'A';
-  if (confidence >= 70) return 'B';
-
+  if (confidence >= 92) return 'A+';
+  if (confidence >= 82) return 'A';
+  if (confidence >= 72) return 'B';
   return 'NO TRADE';
 }
 
@@ -91,11 +90,26 @@ function entryTiming(duration) {
   const remaining = candle - passed;
   const wait = remaining > window ? remaining - window : 0;
 
-  if (wait === 0) {
-    return 'الآن داخل أفضل منطقة دخول';
-  }
+  if (wait === 0) return 'الآن داخل أفضل منطقة دخول';
 
-  return `انتظر ${wait} ثانية تقريبًا، وادخل في آخر ${window} ثانية من الشمعة`;
+  return `انتظر ${wait} ثانية تقريبًا، وادخل في آخر ${window} ثانية`;
+}
+
+function getVolatility(closes) {
+  const recent = closes.slice(-10);
+  const high = Math.max(...recent);
+  const low = Math.min(...recent);
+  return ((high - low) / low) * 100;
+}
+
+function candleStrength(closes) {
+  const last = closes[closes.length - 1];
+  const prev = closes[closes.length - 2];
+  const diff = Math.abs(last - prev);
+
+  if (diff > 0.0015) return 'strong';
+  if (diff > 0.0006) return 'medium';
+  return 'weak';
 }
 
 async function getSignal(symbol, market, duration) {
@@ -123,33 +137,67 @@ async function getSignal(symbol, market, duration) {
     const ema200 = ema(closes.slice(-220), 200);
     const rsi14 = rsi(closes, 14);
 
+    const volatility = getVolatility(closes);
+    const strength = candleStrength(closes);
+
     const upTrend = last > ema20 && ema20 > ema50 && ema50 > ema200;
     const downTrend = last < ema20 && ema20 < ema50 && ema50 < ema200;let signal = '⚪ لا توجد فرصة متاحة';
     let confidence = 0;
     let confirm = 'الشروط غير مكتملة';
 
-    if (upTrend && rsi14 > 55 && rsi14 < 75) {
-      confidence = 72 + Math.min(18, Math.round(rsi14 - 55));
+    if (volatility < 0.03) {
+      return {
+        signal: '⚪ لا توجد فرصة متاحة',
+        confidence: 0,
+        grade: 'NO TRADE',
+        timing: 'لا تدخل',
+        confirm: 'السوق ضعيف جدًا (No Trade Zone)'
+      };
+    }
+
+    if (upTrend && rsi14 > 55 && rsi14 < 72) {
+      confidence = 74;
+
+      if (strength === 'strong') confidence += 10;
+      if (volatility > 0.08) confidence += 6;
+
       signal = '🟢 BUY';
-      confirm = 'الاتجاه صاعد، EMA متوافق، و RSI مناسب';
+      confirm = 'اتجاه صاعد + زخم جيد + تأكيد شمعة';
     }
 
-    if (downTrend && rsi14 < 45 && rsi14 > 25) {
-      confidence = 72 + Math.min(18, Math.round(45 - rsi14));
+    if (downTrend && rsi14 < 45 && rsi14 > 28) {
+      confidence = 74;
+
+      if (strength === 'strong') confidence += 10;
+      if (volatility > 0.08) confidence += 6;
+
       signal = '🔴 SELL';
-      confirm = 'الاتجاه هابط، EMA متوافق، و RSI مناسب';
+      confirm = 'اتجاه هابط + زخم جيد + تأكيد شمعة';
     }
 
-    if (market === 'OTC' && confidence < 75) {
-      signal = '⚪ لا توجد فرصة متاحة';
-      confidence = 0;
-      confirm = 'OTC يحتاج ثقة أعلى، الشروط غير كافية';
+    if (strength === 'weak' && signal !== '⚪ لا توجد فرصة متاحة') {
+      confidence -= 12;
+      confirm = 'الشمعة الحالية ضعيفة';
     }
 
-    if (confidence < 70) {
-      signal = '⚪ لا توجد فرصة متاحة';
-      confidence = 0;
-      confirm = 'الثقة أقل من الحد المطلوب';
+    if (market === 'OTC' && confidence < 82) {
+      return {
+        signal: '⚪ لا توجد فرصة متاحة',
+        confidence: 0,
+        grade: 'NO TRADE',
+        timing: 'لا تدخل',
+        confirm: 'فلتر OTC الصارم رفض الصفقة'
+      };
+    }
+
+    if (confidence < 72) {
+      return {
+        signal: '⚪ لا توجد فرصة متاحة',
+        confidence: 0,
+        grade: 'NO TRADE',
+        timing: 'لا تدخل',
+        confirm: 'الثقة أقل من الحد المطلوب'
+      };
     }
 
     const grade = getGrade(confidence);
@@ -158,7 +206,7 @@ async function getSignal(symbol, market, duration) {
       signal,
       confidence,
       grade,
-      timing: signal.includes('لا توجد') ? 'لا تدخل' : entryTiming(duration),
+      timing: entryTiming(duration),
       confirm
     };
 
@@ -186,20 +234,17 @@ bot.on('callback_query', async (query) => {
 
   if (!sessions[chatId]) sessions[chatId] = {};
 
-  if (data === 'home') {
-    return mainMenu(chatId);
-  }
+  if (data === 'home') return mainMenu(chatId);
 
   if (data === 'help') {
-    return bot.sendMessage(
-      chatId,
+    return bot.sendMessage(chatId,
 `ℹ️ طريقة الاستخدام:
 
 1️⃣ اضغط ابدأ التحليل
 2️⃣ اختر نوع السوق
 3️⃣ اختر الأصل
 4️⃣ اختر المدة
-5️⃣ انتظر النتيجة مع الثقة ووقت الدخول`,
+5️⃣ البوت يفلتر السوق الضعيف تلقائيًا`,
       {
         reply_markup: {
           inline_keyboard: [
@@ -224,7 +269,7 @@ bot.on('callback_query', async (query) => {
 
   if (data.startsWith('market_')) {
     sessions[chatId].market =
-      data.replace('market_', '') === 'OTC' ? 'OTC' : 'سوق حقيقي';
+      data.includes('OTC') ? 'OTC' : 'سوق حقيقي';
 
     const buttons = [];
 
@@ -264,7 +309,6 @@ bot.on('callback_query', async (query) => {
 
   if (data.startsWith('duration_')) {
     sessions[chatId].duration = data.replace('duration_', '');
-
     const s = sessions[chatId];
     const durationLabel =
       durations.find(d => d.value === s.duration)?.label || s.duration;
@@ -273,8 +317,7 @@ bot.on('callback_query', async (query) => {
 
     const result = await getSignal(s.asset, s.market, s.duration);
 
-    return bot.sendMessage(
-      chatId,
+    return bot.sendMessage(chatId,
 `📊 نتيجة التحليل
 
 السوق: ${s.market}
@@ -285,11 +328,10 @@ bot.on('callback_query', async (query) => {
 
 🎯 نسبة الثقة: ${result.confidence}%
 🏅 التقييم: ${result.grade}
-⏳ أفضل وقت للدخول: ${result.timing}
-✅ تأكيد الدخول: ${result.confirm}
-⚠️ إذا انعكست الشمعة أو ضعف التأكيد = لا تدخل
+⏳ وقت الدخول: ${result.timing}
+✅ التأكيد: ${result.confirm}
 
-القرار النهائي عليك، نفّذ وحدك في Pocket Option.`,
+⚠️ القرار النهائي عليك.`,
       {
         reply_markup: {
           inline_keyboard: [
@@ -302,4 +344,4 @@ bot.on('callback_query', async (query) => {
   }
 });
 
-console.log('Bot upgraded phase 1 running...');
+console.log('Bot phase 2 running...');
