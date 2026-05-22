@@ -70,7 +70,7 @@ function rsi(values, period = 14) {
 function getGrade(confidence) {
   if (confidence >= 92) return 'A+';
   if (confidence >= 82) return 'A';
-  if (confidence >= 62) return 'B';
+  if (confidence >= 72) return 'B';
   return 'NO TRADE';
 }
 
@@ -105,19 +105,10 @@ function getVolatility(closes) {
 function candleStrength(closes) {
   const last = closes[closes.length - 1];
   const prev = closes[closes.length - 2];
-  const prev2 = closes[closes.length - 3];
+  const diff = Math.abs(last - prev);
 
-  const move1 = Math.abs(last - prev);
-  const move2 = Math.abs(prev - prev2);
-
-  if (move1 > move2 * 1.4 && move1 > 0.0012) {
-    return 'strong';
-  }
-
-  if (move1 > 0.0005) {
-    return 'medium';
-  }
-
+  if (diff > 0.0015) return 'strong';
+  if (diff > 0.0006) return 'medium';
   return 'weak';
 }
 
@@ -154,7 +145,7 @@ async function getSignal(symbol, market, duration) {
     let confidence = 0;
     let confirm = 'الشروط غير مكتملة';
 
-    if (volatility < 0.015) {
+    if (volatility < 0.03) {
       return {
         signal: '⚪ لا توجد فرصة متاحة',
         confidence: 0,
@@ -166,30 +157,21 @@ async function getSignal(symbol, market, duration) {
 
     if (upTrend && rsi14 > 55 && rsi14 < 72) {
       confidence = 74;
-
       if (strength === 'strong') confidence += 10;
       if (volatility > 0.08) confidence += 6;
-
       signal = '🟢 BUY';
       confirm = 'اتجاه صاعد + زخم جيد + تأكيد شمعة';
     }
 
     if (downTrend && rsi14 < 45 && rsi14 > 28) {
       confidence = 74;
-
       if (strength === 'strong') confidence += 10;
       if (volatility > 0.08) confidence += 6;
-
       signal = '🔴 SELL';
       confirm = 'اتجاه هابط + زخم جيد + تأكيد شمعة';
     }
 
-    if (strength === 'weak' && signal !== '⚪ لا توجد فرصة متاحة') {
-  confidence -= 18;
-  confirm = 'احتمال انعكاس، الشمعة ضعيفة';
-    }
-
-    if (market === 'OTC' && confidence < 85) {
+    if (market === 'OTC' && confidence < 82) {
       return {
         signal: '⚪ لا توجد فرصة متاحة',
         confidence: 0,
@@ -209,19 +191,16 @@ async function getSignal(symbol, market, duration) {
       };
     }
 
-    const grade = getGrade(confidence);
-
     return {
       signal,
       confidence,
-      grade,
+      grade: getGrade(confidence),
       timing: entryTiming(duration),
       confirm
     };
 
   } catch (err) {
     console.log(err);
-
     return {
       signal: '⚪ لا توجد فرصة متاحة',
       confidence: 0,
@@ -254,13 +233,7 @@ bot.on('callback_query', async (query) => {
 3️⃣ اختر الأصل
 4️⃣ اختر المدة
 5️⃣ البوت يفلتر السوق الضعيف تلقائيًا`,
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🏠 الرئيسية', callback_data: 'home' }]
-          ]
-        }
-      }
+      { reply_markup: { inline_keyboard: [[{ text: '🏠 الرئيسية', callback_data: 'home' }]] } }
     );
   }
 
@@ -277,11 +250,9 @@ bot.on('callback_query', async (query) => {
   }
 
   if (data.startsWith('market_')) {
-    sessions[chatId].market =
-      data.includes('OTC') ? 'OTC' : 'سوق حقيقي';
+    sessions[chatId].market = data.includes('OTC') ? 'OTC' : 'سوق حقيقي';
 
     const buttons = [];
-
     for (let i = 0; i < assets.length; i += 2) {
       buttons.push(
         assets.slice(i, i + 2).map(asset => ({
@@ -294,9 +265,7 @@ bot.on('callback_query', async (query) => {
     buttons.push([{ text: '🏠 الرئيسية', callback_data: 'home' }]);
 
     return bot.sendMessage(chatId, '💱 اختر الأصل:', {
-      reply_markup: {
-        inline_keyboard: buttons
-      }
+      reply_markup: { inline_keyboard: buttons }
     });
   }
 
@@ -310,17 +279,14 @@ bot.on('callback_query', async (query) => {
     buttons.push([{ text: '🏠 الرئيسية', callback_data: 'home' }]);
 
     return bot.sendMessage(chatId, '⏱️ اختر مدة الصفقة:', {
-      reply_markup: {
-        inline_keyboard: buttons
-      }
+      reply_markup: { inline_keyboard: buttons }
     });
   }
 
   if (data.startsWith('duration_')) {
     sessions[chatId].duration = data.replace('duration_', '');
     const s = sessions[chatId];
-    const durationLabel =
-      durations.find(d => d.value === s.duration)?.label || s.duration;
+    const durationLabel = durations.find(d => d.value === s.duration)?.label || s.duration;
 
     await bot.sendMessage(chatId, '⏳ جاري تحليل الصفقة...');
 
