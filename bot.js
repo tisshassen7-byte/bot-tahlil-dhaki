@@ -145,7 +145,7 @@ async function getSignal(symbol, market, duration) {
     let confidence = 0;
     let confirm = 'الشروط غير مكتملة';
 
-    if (volatility < 0.015) {
+    if (volatility < 0.010) {
       return {
         signal: '⚪ لا توجد فرصة متاحة',
         confidence: 0,
@@ -171,7 +171,7 @@ async function getSignal(symbol, market, duration) {
       confirm = 'اتجاه هابط + زخم جيد + تأكيد شمعة';
     }
 
-    if (market === 'OTC' && confidence < 74) {
+    if (market === 'OTC' && confidence < 68) {
       return {
         signal: '⚪ لا توجد فرصة متاحة',
         confidence: 0,
@@ -181,7 +181,7 @@ async function getSignal(symbol, market, duration) {
       };
     }
 
-    if (confidence < 72) {
+    if (confidence < 58) {
       return {
         signal: '⚪ لا توجد فرصة متاحة',
         confidence: 0,
