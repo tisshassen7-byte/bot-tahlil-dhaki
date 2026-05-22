@@ -8,15 +8,12 @@ const http = require('http');
 const token = process.env.TELEGRAM_TOKEN;
 const apiKey = process.env.TWELVE_API_KEY;
 
-const bot = new TelegramBot(token, {
-  polling: {
-    autoStart: true,
-    params: { timeout: 10 }
-  },
-  filepath: false
-});
+const bot = new TelegramBot(token, { polling: false, filepath: false });
 
-bot.deleteWebHook();
+(async () => {
+  await bot.deleteWebHook({ drop_pending_updates: true });
+  await bot.startPolling();
+})();
 
 const sessions = {};
 http.createServer((req, res) => {
