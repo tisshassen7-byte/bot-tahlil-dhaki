@@ -436,29 +436,27 @@ BUY / SELL / لا توجد فرصة
     const buttons = durations.map(d => [
       { text: d.label, callback_data: 'duration_' + d.value }
     ]);
+buttons.push([{ text: '🏠 الرئيسية', callback_data: 'home' }]);
 
-    buttons.push([{ text: '🏠 الرئيسية', callback_data: 'home' }]);
-
-    return bot.sendMessage(chatId, '⏱️ اختر مدة الصفقة:', {
-      reply_markup: {
-        inline_keyboard: buttons
-      }
-    });
+return bot.sendMessage(chatId, '⏱️ اختر مدة الصفقة:', {
+  reply_markup: {
+    inline_keyboard: buttons
   }
+});
+}
 
-  if (data.startsWith('duration_')) {
-    sessions[chatId].duration = data.replace('duration_', '');
+if (data.startsWith('duration_')) {
+  sessions[chatId].duration = data.replace('duration_', '');
 
-    const s = sessions[chatId];
-    const durationLabel =
-      durations.find(d => d.value === s.duration)?.label || s.duration;
+  const s = sessions[chatId];
+  const durationLabel = durations.find(d => d.value === s.duration)?.label || s.duration;
 
-    await bot.sendMessage(chatId, '⏳ جاري تحليل الصفقة...');
+  await bot.sendMessage(chatId, '⏳ جاري تحليل الصفقة...');
 
-    const result = await getSignal(s.asset, s.market, s.duration);
+  const result = await getSignal(s.asset, s.market, s.duration);
 
-    return bot.sendMessage(
-      chatId,
+  return bot.sendMessage(
+    chatId,
 `📊 نتيجة التحليل
 
 السوق: ${s.market}
@@ -473,18 +471,16 @@ BUY / SELL / لا توجد فرصة
 ✅ التأكيد: ${result.confirm}
 
 ⚠️ القرار النهائي عليك.`,
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '↩️ تحليل جديد', callback_data: 'start_analysis' }],
-            [{ text: '🏠 الرئيسية', callback_data: 'home' }]
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '↩️ تحليل جديد', callback_data: 'start_analysis' }],
+          [{ text: '🏠 الرئيسية', callback_data: 'home' }]
         ]
-        }
-      });
+      }
     }
+  );
+}
 });
-console.log('Bot professional version running...');
 
-bot.onText(/\/start/i, (msg) => {
-  mainMenu(msg.chat.id);
-});
+console.log('Bot professional version running...');
