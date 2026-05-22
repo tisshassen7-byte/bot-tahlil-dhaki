@@ -188,3 +188,4 @@ bot.on('callback_query', async (query) => {
       reply_markup: {
         inline_keyboard: [
           [{
+});
