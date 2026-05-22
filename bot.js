@@ -1,21 +1,21 @@
-
-process.on('uncaughtException', console.error);
-process.on('unhandledRejection', console.error);
-
 const TelegramBot = require('node-telegram-bot-api');
 const http = require('http');
 
 const token = process.env.TELEGRAM_TOKEN;
 const apiKey = process.env.TWELVE_API_KEY;
 
-const bot = new TelegramBot(token, { polling: false, filepath: false });
+const bot = new TelegramBot(token, {
+  polling: {
+    autoStart: true,
+    params: { timeout: 10 }
+  },
+  filepath: false
+});
 
-(async () => {
-  await bot.deleteWebHook({ drop_pending_updates: true });
-  await bot.startPolling();
-})();
+bot.deleteWebHook();
 
 const sessions = {};
+
 http.createServer((req, res) => {
   res.writeHead(200);
   res.end('Bot alive');
@@ -66,30 +66,7 @@ function ema(values, period) {
   return result;
 }
 
-function rsi(values, period = 14) {
-  let gains = 0;
-  let losses = 0;
-
-  for (let i = values.length - period; i < values.length; i++) {
-    const diff = values[i] - values[i - 1];
-
-    if (diff >= 0) gains += diff;
-    else losses += Math.abs(diff);
-  }
-
-  const avgGain = gains / period;
-  const avgLoss = losses / period || 0.000001;
-  const rs = avgGain / avgLoss;
-
-  return 100 - (100 / (1 + rs));
-}
-
-function getGrade(confidence) {
-  if (confidence >= 92) return 'A+';
-  if (confidence >= 82) return 'A';
-  if (confidence >= 64) return 'B';
-  return 'NO TRADE';
-}function entryTiming(duration) {
+function rsi(values, period = 14) {function entryTiming(duration) {
   const now = new Date();
   const sec = now.getSeconds();
 
@@ -171,7 +148,7 @@ function trendDirection(closes) {
   if (last < ema20 && ema20 < ema50 && ema50 < ema200) return 'down';
 
   return 'mixed';
-    }function multiTimeframeConfirm(closes) {
+}function multiTimeframeConfirm(closes) {
   const shortCloses = closes.slice(-60);
   const midCloses = closes.slice(-120);
   const longCloses = closes.slice(-220);
@@ -286,7 +263,8 @@ function calculateScore({ direction, rsi14, volatility, strength, sr, breakout, 
 
   score = Math.max(0, Math.min(100, Math.round(score)));
 
-  return { score, reasons };async function getSignal(symbol, market, duration) {
+  return { score, reasons };
+      }async function getSignal(symbol, market, duration) {
   try {
     const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=1min&outputsize=220&apikey=${apiKey}`;
 
@@ -385,8 +363,7 @@ function calculateScore({ direction, rsi14, volatility, strength, sr, breakout, 
 bot.onText(/\/start/, (msg) => {
   sessions[msg.chat.id] = {};
   mainMenu(msg.chat.id);
-});
-}bot.on('callback_query', async (query) => {
+});bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id;
   const data = query.data;
 
