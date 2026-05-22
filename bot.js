@@ -70,7 +70,7 @@ function rsi(values, period = 14) {
 function getGrade(confidence) {
   if (confidence >= 92) return 'A+';
   if (confidence >= 82) return 'A';
-  if (confidence >= 72) return 'B';
+  if (confidence >= 62) return 'B';
   return 'NO TRADE';
 }
 
@@ -154,7 +154,7 @@ async function getSignal(symbol, market, duration) {
     let confidence = 0;
     let confirm = 'الشروط غير مكتملة';
 
-    if (volatility < 0.025) {
+    if (volatility < 0.015) {
       return {
         signal: '⚪ لا توجد فرصة متاحة',
         confidence: 0,
