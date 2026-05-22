@@ -476,13 +476,15 @@ BUY / SELL / لا توجد فرصة
       {
         reply_markup: {
           inline_keyboard: [
-            [{ text: '🔄 تحليل جديد', callback_data: 'start_analysis' }],
+            [{ text: '↩️ تحليل جديد', callback_data: 'start_analysis' }],
             [{ text: '🏠 الرئيسية', callback_data: 'home' }]
-          ]
+        ]
         }
-      }
-    );
-  }
+      });
+    }
 });
-
 console.log('Bot professional version running...');
+
+bot.onText(/\/start/i, (msg) => {
+  mainMenu(msg.chat.id);
+});
