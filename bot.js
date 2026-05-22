@@ -105,10 +105,19 @@ function getVolatility(closes) {
 function candleStrength(closes) {
   const last = closes[closes.length - 1];
   const prev = closes[closes.length - 2];
-  const diff = Math.abs(last - prev);
+  const prev2 = closes[closes.length - 3];
 
-  if (diff > 0.0015) return 'strong';
-  if (diff > 0.0006) return 'medium';
+  const move1 = Math.abs(last - prev);
+  const move2 = Math.abs(prev - prev2);
+
+  if (move1 > move2 * 1.4 && move1 > 0.0012) {
+    return 'strong';
+  }
+
+  if (move1 > 0.0005) {
+    return 'medium';
+  }
+
   return 'weak';
 }
 
@@ -145,7 +154,7 @@ async function getSignal(symbol, market, duration) {
     let confidence = 0;
     let confirm = 'الشروط غير مكتملة';
 
-    if (volatility < 0.03) {
+    if (volatility < 0.025) {
       return {
         signal: '⚪ لا توجد فرصة متاحة',
         confidence: 0,
@@ -176,11 +185,11 @@ async function getSignal(symbol, market, duration) {
     }
 
     if (strength === 'weak' && signal !== '⚪ لا توجد فرصة متاحة') {
-      confidence -= 12;
-      confirm = 'الشمعة الحالية ضعيفة';
+  confidence -= 18;
+  confirm = 'احتمال انعكاس، الشمعة ضعيفة';
     }
 
-    if (market === 'OTC' && confidence < 82) {
+    if (market === 'OTC' && confidence < 85) {
       return {
         signal: '⚪ لا توجد فرصة متاحة',
         confidence: 0,
