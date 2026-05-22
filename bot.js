@@ -13,37 +13,18 @@ http.createServer((req, res) => {
 }).listen(process.env.PORT || 8080);
 
 const assets = [
-  'AED/CNY',
-  'CHF/JPY',
-  'CHF/NOK',
   'EUR/USD',
-  'GBP/AUD',
-  'GBP/JPY',
-  'JOD/CNY',
-  'LBP/USD',
-  'NGN/USD',
-  'NZD/USD',
-  'TND/USD',
-  'USD/ARS',
-  'USD/CAD',
-  'CAD/CHF',
-  'USD/MYR',
-  'USD/IDR',
-  'USD/BRL',
-  'USD/EGP',
-  'USD/JPY',
-  'USD/RUB',
-  'USD/THB',
-  'YER/USD',
-  'ZAR/USD',
   'GBP/USD',
-  'CAD/JPY',
-  'OMR/CNY',
-  'USD/PHP',
-  'USD/CLP',
-  'AUD/NZD',
-  'KES/USD',
-  'USD/PKR'
+  'USD/JPY',
+  'EUR/GBP',
+  'AUD/USD',
+  'NZD/USD',
+  'USD/CAD',
+  'USD/CHF',
+  'GBP/JPY',
+  'EUR/JPY',
+  'AUD/JPY',
+  'CAD/JPY'
 ];
 
 const durations = [
