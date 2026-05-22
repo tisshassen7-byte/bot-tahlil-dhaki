@@ -70,7 +70,7 @@ function rsi(values, period = 14) {
 function getGrade(confidence) {
   if (confidence >= 92) return 'A+';
   if (confidence >= 82) return 'A';
-  if (confidence >= 72) return 'B';
+  if (confidence >= 64) return 'B';
   return 'NO TRADE';
 }
 
@@ -145,7 +145,7 @@ async function getSignal(symbol, market, duration) {
     let confidence = 0;
     let confirm = 'الشروط غير مكتملة';
 
-    if (volatility < 0.03) {
+    if (volatility < 0.015) {
       return {
         signal: '⚪ لا توجد فرصة متاحة',
         confidence: 0,
@@ -171,7 +171,7 @@ async function getSignal(symbol, market, duration) {
       confirm = 'اتجاه هابط + زخم جيد + تأكيد شمعة';
     }
 
-    if (market === 'OTC' && confidence < 82) {
+    if (market === 'OTC' && confidence < 74) {
       return {
         signal: '⚪ لا توجد فرصة متاحة',
         confidence: 0,
