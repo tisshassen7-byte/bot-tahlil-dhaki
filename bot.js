@@ -84,12 +84,6 @@ function getUserHour(chatId) {
   return { hour: (utcH + offset + 24) % 24, minute: utcM };
 }
 
-// ─── Time Window Filter (20:00 - 00:00) ──────────────────────────────────────
-function isActiveTime(chatId) {
-  const { hour } = getUserHour(chatId);
-  return hour >= 20 && hour <= 23;
-}
-
 // ─── News Filter (UTC-based) ──────────────────────────────────────────────────
 function isNewsTime() {
   const now = new Date();
@@ -375,7 +369,7 @@ function timezoneMenu(chatId) {
   const current = getUserOffset(chatId);
   return bot.sendMessage(
     chatId,
-    `⏰ اختر فارق توقيتك عن UTC\nالحالي: UTC+${current}\n\nالبوت يعمل من 20:00 إلى 00:00 بتوقيتك`,
+    `⏰ اختر فارق توقيتك عن UTC\nالحالي: UTC+${current}`,
     { reply_markup: { inline_keyboard: rows } }
   );
 }
@@ -408,7 +402,7 @@ bot.on("callback_query", async q => {
       log("INFO", "timezone_set", { chatId, offset });
       return bot.sendMessage(
         chatId,
-        `✅ تم ضبط توقيتك على UTC${offset >= 0 ? "+" : ""}${offset}\nالبوت سيعمل من 20:00 إلى 00:00 بتوقيتك.`,
+        `✅ تم ضبط توقيتك على UTC${offset >= 0 ? "+" : ""}${offset}`,
         { reply_markup: { inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]] } }
       );
     }
@@ -430,16 +424,6 @@ bot.on("callback_query", async q => {
       return bot.sendMessage(
         chatId,
         `⏳ انتظر ${spam.remaining} ثانية قبل طلب تحليل جديد.`,
-        { reply_markup: { inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]] } }
-      );
-    }
-
-    // Time window
-    if (!isActiveTime(chatId)) {
-      const offset = getUserOffset(chatId);
-      return bot.sendMessage(
-        chatId,
-        `🕐 وقت التحليل انتهى.\n\nالبوت يعمل فقط من 20:00 إلى 00:00 بتوقيتك (UTC+${offset}).\nعد في وقت التحليل.`,
         { reply_markup: { inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]] } }
       );
     }
