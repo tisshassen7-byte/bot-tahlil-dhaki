@@ -9,18 +9,31 @@ const http = require("http");
 const fetch = require("node-fetch");
 
 // ─── Environment Variables ────────────────────────────────────────────────────
-const token = process.env.TELEGRAM_TOKEN;
-const apiKey = process.env.TWELVE_API_KEY;
+const token   = process.env.TELEGRAM_TOKEN;
+const apiKey  = process.env.TWELVE_API_KEY;
+const OWNER_ID = parseInt(process.env.OWNER_ID, 10); // معرّف المالك الوحيد المسموح له
 
-if (!token) throw new Error("TELEGRAM_TOKEN غير موجود في البيئة");
-if (!apiKey) throw new Error("TWELVE_API_KEY غير موجود في البيئة");
+if (!token)   throw new Error("TELEGRAM_TOKEN غير موجود في البيئة");
+if (!apiKey)  throw new Error("TWELVE_API_KEY غير موجود في البيئة");
+if (!OWNER_ID || isNaN(OWNER_ID)) throw new Error("OWNER_ID غير موجود في البيئة — أضف معرّف Telegram الخاص بك");
+
+// ─── Access Guard ─────────────────────────────────────────────────────────────
+function isOwner(chatId) {
+  return chatId === OWNER_ID;
+}
 
 // ─── Bot Initialization ───────────────────────────────────────────────────────
 const bot = new TelegramBot(token, { polling: true });
 
 // ─── State ────────────────────────────────────────────────────────────────────
 const sessions = {}; // جلسة كل مستخدم
-const userSettings = {}; // إعدادات المستخدم (timezone offset)
+// التوقيت ثابت: Europe/Paris (يشمل التوقيت الصيفي تلقائياً)
+function parisNow() {
+  return new Date(new Date().toLocaleString("en-US", { timeZone: "Europe/Paris" }));
+}
+function parisTimeStr(now = new Date()) {
+  return now.toLocaleTimeString("fr-FR", { timeZone: "Europe/Paris", hour: "2-digit", minute: "2-digit" });
+}
 
 // ─── Keep-alive Server (Railway) ──────────────────────────────────────────────
 http
@@ -68,17 +81,6 @@ function log(level, msg, extra = {}) {
 }
 
 // ─── Timezone Helpers ─────────────────────────────────────────────────────────
-function getUserOffset(chatId) {
-  return userSettings[chatId]?.utcOffset ?? 3; // UTC+3 افتراضي
-}
-
-function getUserHour(chatId) {
-  const offset = getUserOffset(chatId);
-  const now = new Date();
-  const utcH = now.getUTCHours();
-  const utcM = now.getUTCMinutes();
-  return { hour: (utcH + offset + 24) % 24, minute: utcM };
-}
 
 // ─── News Filter (UTC-based) ──────────────────────────────────────────────────
 function isNewsTime() {
@@ -434,7 +436,6 @@ function mainMenu(chatId) {
         inline_keyboard: [
           [{ text: "📊 تحليل زوج", callback_data: "start_analysis" }],
           [{ text: "🔍 مسح جميع الأزواج", callback_data: "scan_all" }],
-          [{ text: "⏰ إعداد التوقيت", callback_data: "set_timezone" }],
         ],
       },
     },
@@ -457,25 +458,6 @@ function assetMenu(chatId) {
   });
 }
 
-function timezoneMenu(chatId) {
-  const offsets = [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 8];
-  const rows = [];
-  for (let i = 0; i < offsets.length; i += 4) {
-    rows.push(
-      offsets.slice(i, i + 4).map((o) => ({
-        text: `UTC${o >= 0 ? "+" : ""}${o}`,
-        callback_data: `tz_${o}`,
-      })),
-    );
-  }
-  rows.push([{ text: "🏠 الرئيسية", callback_data: "home" }]);
-  const current = getUserOffset(chatId);
-  return bot.sendMessage(
-    chatId,
-    `⏰ اختر فارق توقيتك عن UTC\nالحالي: UTC+${current}`,
-    { reply_markup: { inline_keyboard: rows } },
-  );
-}
 
 // ─── Scan All Pairs ───────────────────────────────────────────────────────────
 async function scanAllPairs(chatId, statusMsgId) {
@@ -513,31 +495,29 @@ async function scanAllPairs(chatId, statusMsgId) {
 }
 
 // ─── Suggested Entry Time (5min candle logic) ─────────────────────────────────
-function suggestedEntry(now = new Date()) {
-  const mins = now.getMinutes();
-  const secs = now.getSeconds();
-  const posInCandle = mins % 5; // 0..4: position within current 5-min candle
+function suggestedEntry() {
+  const paris = parisNow();
+  const mins = paris.getMinutes();
+  const secs = paris.getSeconds();
+  const posInCandle = mins % 5; // 0..4: موقع داخل الشمعة الحالية
 
-  // أول دقيقتين من الشمعة → دخول فوري (الشمعة لا تزال في بدايتها)
+  // أول دقيقتين من الشمعة → دخول فوري
   if (posInCandle === 0 || (posInCandle === 1 && secs < 30)) {
     return { label: "الآن 🟢", waitMins: 0 };
   }
 
   // انتظر فتح الشمعة التالية
   const minsToNext = 5 - posInCandle;
-  const totalMins = now.getHours() * 60 + mins + minsToNext;
-  const nextH = Math.floor(totalMins / 60) % 24;
-  const nextM = totalMins % 60;
-  const timeStr = `${String(nextH).padStart(2, "0")}:${String(nextM).padStart(2, "0")}`;
+  const next = new Date(paris.getTime() + minsToNext * 60 * 1000);
+  const timeStr = `${String(next.getHours()).padStart(2, "0")}:${String(next.getMinutes()).padStart(2, "0")}`;
   const waitLabel = minsToNext === 1 ? "دقيقة واحدة" : `${minsToNext} دقائق`;
-  return { label: `${timeStr} UTC (خلال ${waitLabel}) ⏳`, waitMins: minsToNext };
+  return { label: `${timeStr} (خلال ${waitLabel}) ⏳`, waitMins: minsToNext };
 }
 
 function formatScanResults(buys, sells) {
-  const now = new Date();
-  const ts = now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-  const entry = suggestedEntry(now);
-  const lines = [`🔍 نتائج المسح — ${ts} UTC`, `━━━━━━━━━━━━━━━━━━`];
+  const ts = parisTimeStr();
+  const entry = suggestedEntry();
+  const lines = [`🔍 نتائج المسح — ${ts} (فرنسا)`, `━━━━━━━━━━━━━━━━━━`];
 
   if (buys.length === 0 && sells.length === 0) {
     lines.push("⚪ لا توجد إشارات واضحة الآن على أي زوج.");
@@ -572,6 +552,7 @@ function formatScanResults(buys, sells) {
 // ─── /start ───────────────────────────────────────────────────────────────────
 bot.onText(/\/start/i, (msg) => {
   const chatId = msg.chat.id;
+  if (!isOwner(chatId)) { log("WARN", "blocked_user", { chatId }); return; }
   sessions[chatId] = {};
   log("INFO", "/start", { chatId });
   mainMenu(chatId);
@@ -580,6 +561,7 @@ bot.onText(/\/start/i, (msg) => {
 // ─── /scan ────────────────────────────────────────────────────────────────────
 bot.onText(/\/scan/i, async (msg) => {
   const chatId = msg.chat.id;
+  if (!isOwner(chatId)) { log("WARN", "blocked_user", { chatId }); return; }
   if (!sessions[chatId]) sessions[chatId] = {};
 
   if (isNewsTime()) {
@@ -625,17 +607,56 @@ bot.onText(/\/scan/i, async (msg) => {
   });
 });
 
+// ─── /status ──────────────────────────────────────────────────────────────────
+bot.onText(/\/status/i, (msg) => {
+  const chatId = msg.chat.id;
+  if (!isOwner(chatId)) { log("WARN", "blocked_user", { chatId }); return; }
+
+  const ts = parisTimeStr();
+  const lastRun = schedulerState.lastRun
+    ? schedulerState.lastRun.toLocaleTimeString("fr-FR", { timeZone: "Europe/Paris", hour: "2-digit", minute: "2-digit" }) + " (فرنسا)"
+    : "لم يعمل بعد";
+
+  const text = [
+    `📡 حالة البوت — ${ts} (فرنسا)`,
+    `━━━━━━━━━━━━━━━━━━`,
+    `🔒 الوضع: خاص (أنت فقط)`,
+    `⚙️  المجدول: ${schedulerState.active ? "يعمل ✅" : "متوقف ❌"}`,
+    `🕒 آخر مسح: ${lastRun}`,
+    `🔁 عدد الجولات: ${schedulerState.totalRuns}`,
+    `🏅 Grade A (آخر جولة): ${schedulerState.lastGradeA}`,
+    `📤 تنبيهات أُرسلت (آخر جولة): ${schedulerState.lastSent}`,
+    `━━━━━━━━━━━━━━━━━━`,
+    `📋 الأزواج المراقبة: ${ALLOWED_ASSETS.length}`,
+    `⏱️  فترة المسح: كل 10 دقائق`,
+    `📌 شرط الإرسال: Grade A + وقت دخول مستقبلي`,
+  ].join("\n");
+
+  bot.sendMessage(chatId, text, {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "🔍 مسح الآن", callback_data: "scan_all" }],
+        [{ text: "🏠 الرئيسية", callback_data: "home"     }],
+      ],
+    },
+  });
+});
+
 // ─── Callback Handler ─────────────────────────────────────────────────────────
 bot.on("callback_query", async (q) => {
   const chatId = q.message.chat.id;
   const data = q.data;
 
+  if (!isOwner(chatId)) {
+    log("WARN", "blocked_callback", { chatId });
+    await bot.answerCallbackQuery(q.id).catch(() => {});
+    return;
+  }
   await bot.answerCallbackQuery(q.id).catch(() => {});
   if (!sessions[chatId]) sessions[chatId] = {};
 
   if (data === "home") return mainMenu(chatId);
   if (data === "start_analysis") return assetMenu(chatId);
-  if (data === "set_timezone") return timezoneMenu(chatId);
 
   // ── Scan All Pairs
   if (data === "scan_all") {
@@ -681,24 +702,6 @@ bot.on("callback_query", async (q) => {
         ],
       },
     });
-  }
-
-  // ── Timezone Selection
-  if (data.startsWith("tz_")) {
-    const offset = parseInt(data.replace("tz_", ""), 10);
-    if (!isNaN(offset)) {
-      userSettings[chatId] = { utcOffset: offset };
-      log("INFO", "timezone_set", { chatId, offset });
-      return bot.sendMessage(
-        chatId,
-        `✅ تم ضبط توقيتك على UTC${offset >= 0 ? "+" : ""}${offset}`,
-        {
-          reply_markup: {
-            inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]],
-          },
-        },
-      );
-    }
   }
 
   // ── Asset Selection → Analysis
@@ -783,6 +786,106 @@ bot.on("callback_query", async (q) => {
   }
 });
 
+// ─── Scheduler State (for /status) ───────────────────────────────────────────
+const schedulerState = {
+  active:       true,
+  lastRun:      null,   // Date
+  lastGradeA:   0,
+  lastSent:     0,
+  totalRuns:    0,
+};
+
+// ─── Auto-Scheduler: Grade A future-entry alerts every 10 minutes ─────────────
+async function runAutoScan() {
+  if (isNewsTime()) {
+    log("INFO", "auto_scan_skipped", { reason: "news_time" });
+    return;
+  }
+
+  // حساب وقت الدخول قبل المسح — إذا كان "الآن" لا نُرسل تنبيهاً تلقائياً
+  const entry = suggestedEntry();
+  if (entry.waitMins === 0) {
+    log("INFO", "auto_scan_skipped", { reason: "entry_is_now" });
+    schedulerState.lastRun    = new Date();
+    schedulerState.totalRuns += 1;
+    return;
+  }
+
+  log("INFO", "auto_scan_start", { waitMins: entry.waitMins });
+  schedulerState.totalRuns += 1;
+
+  const gradeABuys  = [];
+  const gradeASells = [];
+
+  for (let i = 0; i < ALLOWED_ASSETS.length; i++) {
+    const asset = ALLOWED_ASSETS[i];
+    try {
+      const result = await analyze(asset);
+      if (!result.noTrade && result.grade === "A") {
+        const rec = { asset, signal: result.signal, confidence: result.confidence };
+        if (result.signal.includes("BUY"))  gradeABuys.push(rec);
+        else                                 gradeASells.push(rec);
+      }
+    } catch {
+      // تجاهل أخطاء الأزواج الفردية
+    }
+    if (i < ALLOWED_ASSETS.length - 1) await new Promise((r) => setTimeout(r, 1200));
+  }
+
+  schedulerState.lastRun   = new Date();
+  schedulerState.lastGradeA = gradeABuys.length + gradeASells.length;
+
+  const all = [...gradeABuys, ...gradeASells];
+  if (all.length === 0) {
+    log("INFO", "auto_scan_done", { gradeA: 0, sent: 0 });
+    schedulerState.lastSent = 0;
+    return; // لا إشارات Grade A — لا إرسال
+  }
+
+  log("INFO", "auto_scan_done", { gradeA: all.length, waitMins: entry.waitMins });
+  schedulerState.lastSent = all.length;
+
+  const ts    = parisTimeStr();
+  const lines = [
+    `🔔 تنبيه تلقائي — ${ts} (فرنسا)`,
+    `🏅 Grade A — دخول مقترح خلال ${entry.waitMins === 1 ? "دقيقة واحدة" : entry.waitMins + " دقائق"}`,
+    `━━━━━━━━━━━━━━━━━━`,
+    `⏰ وقت الدخول: ${entry.label}\n`,
+  ];
+
+  if (gradeABuys.length > 0) {
+    lines.push(`🟢 BUY:`);
+    gradeABuys.forEach((e) =>
+      lines.push(`  • ${e.asset}  ${e.confidence}%`),
+    );
+  }
+  if (gradeASells.length > 0) {
+    lines.push(gradeABuys.length ? `\n🔴 SELL:` : `🔴 SELL:`);
+    gradeASells.forEach((e) =>
+      lines.push(`  • ${e.asset}  ${e.confidence}%`),
+    );
+  }
+
+  lines.push(`\n━━━━━━━━━━━━━━━━━━`);
+  lines.push(`🎯 Pocket Option — سوق حقيقي`);
+  lines.push(`⚠️ القرار النهائي عليك أنت.`);
+
+  await bot.sendMessage(OWNER_ID, lines.join("\n"), {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "📊 تفاصيل زوج", callback_data: "start_analysis" }],
+        [{ text: "🏠 الرئيسية",   callback_data: "home"           }],
+      ],
+    },
+  }).catch((err) => log("ERROR", "auto_scan_send_failed", { error: err.message }));
+}
+
+// ابدأ المجدول بعد 30 ثانية من التشغيل ثم كل 10 دقائق
+setTimeout(() => {
+  runAutoScan();
+  setInterval(runAutoScan, 10 * 60 * 1000);
+}, 30 * 1000);
+
 // ─── Global Error Handlers ────────────────────────────────────────────────────
 process.on("unhandledRejection", (reason) => {
   log("ERROR", "unhandledRejection", { reason: String(reason) });
@@ -792,4 +895,4 @@ process.on("uncaughtException", (err) => {
   log("ERROR", "uncaughtException", { error: err.message, stack: err.stack });
 });
 
-log("INFO", "bot_started", { note: "Pocket Option analysis bot is running" });
+log("INFO", "bot_started", { note: "Pocket Option analysis bot is running — private mode" });
