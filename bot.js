@@ -42,7 +42,7 @@ const HIGH_IMPACT_UTC_RANGES = [
   { h: 18, m: 0, endH: 18, endM: 5 }, // إغلاق لندن
 ];
 
-const MIN_CONFIDENCE = 65; // حد أدنى للثقة
+const MIN_CONFIDENCE = 60; // حد أدنى للثقة
 const ANALYSIS_INTERVAL = "5min"; // إطار زمني ثابت للتحليل
 
 // ─── Logging ──────────────────────────────────────────────────────────────────
@@ -179,8 +179,8 @@ function grade(score) {
   return "C";
 }
 
-// ─── Fetch Candles from TwelveData ───────────────────────────────────────────
-async function getCandles(symbol) {
+// ─── Fetch Candles from TwelveData (with one auto-retry) ─────────────────────
+async function fetchOnce(symbol) {
   const url =
     `https://api.twelvedata.com/time_series` +
     `?symbol=${encodeURIComponent(symbol)}` +
@@ -196,6 +196,18 @@ async function getCandles(symbol) {
   }
   if (!data.values || data.values.length < 80) {
     throw new Error("بيانات غير كافية من TwelveData");
+  }
+  return data;
+}
+
+async function getCandles(symbol) {
+  let data;
+  try {
+    data = await fetchOnce(symbol);
+  } catch (err) {
+    logger.warn({ symbol, err: err.message }, "TwelveData fetch failed — retrying once");
+    await new Promise((r) => setTimeout(r, 3000));
+    data = await fetchOnce(symbol);
   }
 
   return data.values
@@ -246,27 +258,33 @@ async function analyze(symbol) {
   const tooDead = volRatio < 0.0001;
   const tooWild = volRatio > 0.005;
 
-  // ── Trend Detection (EMA cascade — بدون اشتراط آخر سعر فوق/تحت EMA9 تماماً)
+  // ── Trend Detection — مستويان: قوي (4 EMAs) ومعتدل (3 EMAs)
   const strongUp =
-    ema9 > ema21 && ema21 > ema50 && ema50 > ema100 && last > ema50; // السعر فوق EMA50 كحد أدنى
+    ema9 > ema21 && ema21 > ema50 && ema50 > ema100 && last > ema50;
 
   const strongDown =
-    ema9 < ema21 && ema21 < ema50 && ema50 < ema100 && last < ema50; // السعر تحت EMA50 كحد أدنى
+    ema9 < ema21 && ema21 < ema50 && ema50 < ema100 && last < ema50;
 
-  // فلتر السوق الضعيف: خُفف ليناسب الإطار 5min (الفروق صغيرة طبيعياً)
-  const weakMarket = Math.abs(ema21 - ema50) / last < 0.00008;
+  // ترند معتدل: EMA9>21>50 بدون اشتراط EMA100
+  const modUp   = !strongUp   && ema9 > ema21 && ema21 > ema50 && last > ema21;
+  const modDown = !strongDown && ema9 < ema21 && ema21 < ema50 && last < ema21;
+
+  const anyUp   = strongUp   || modUp;
+  const anyDown = strongDown || modDown;
+
+  // فجوة EMA21-EMA50 — للطرح فقط، لا للحجب المطلق
+  const emaSep = Math.abs(ema21 - ema50) / last;
 
   const { nearResistance, nearSupport } = supportResistance(closes, last);
   const candle = candleQuality(candles);
   const trendConf = trendConfirmation(candles);
 
-  // ── Hard filters → NO TRADE immediately
+  // ── Hard filters (خطر حقيقي فقط)
   if (tooDead)
     return noTrade("⚪ السوق راكد: الحركة ضعيفة جداً ولا تستحق الدخول");
   if (tooWild) return noTrade("🔴 تذبذب شديد: الخطر عالٍ جداً");
-  if (weakMarket) return noTrade("⚪ الترند غير واضح: EMAs متقاربة جداً");
-  if (!strongUp && !strongDown)
-    return noTrade("⚪ لا يوجد ترند قوي: السوق غير محدد الاتجاه");
+  if (!anyUp && !anyDown)
+    return noTrade("⚪ لا يوجد اتجاه: EMAs متشابكة في جميع الاتجاهات");
 
   // ── Scoring
   let buyScore = 0,
@@ -274,18 +292,31 @@ async function analyze(symbol) {
   const buyReasons = [],
     sellReasons = [];
 
+  // ترند قوي = 35 | معتدل = 20
   if (strongUp) {
     buyScore += 35;
     buyReasons.push("ترند صاعد قوي (EMA 9>21>50>100)");
+  } else if (modUp) {
+    buyScore += 20;
+    buyReasons.push("ترند صاعد معتدل (EMA 9>21>50)");
   }
   if (strongDown) {
     sellScore += 35;
     sellReasons.push("ترند هابط قوي (EMA 9<21<50<100)");
+  } else if (modDown) {
+    sellScore += 20;
+    sellReasons.push("ترند هابط معتدل (EMA 9<21<50)");
   }
 
-  // RSI — في الترند القوي يُقبل نطاق أوسع (RSI عالي في الصعود = زخم وليس تشبعاً)
-  const rsiBuyOk = strongUp ? r >= 40 && r <= 88 : r >= 45 && r <= 72;
-  const rsiSellOk = strongDown ? r >= 12 && r <= 60 : r >= 28 && r <= 55;
+  // طرح بسيط عند EMAs قريبة جداً (لا حجب)
+  if (emaSep < 0.00005) {
+    buyScore  -= 8;
+    sellScore -= 8;
+  }
+
+  // RSI — نطاق واسع في الترند
+  const rsiBuyOk  = anyUp   ? (r >= 38 && r <= 90) : (r >= 45 && r <= 72);
+  const rsiSellOk = anyDown ? (r >= 10 && r <= 62) : (r >= 28 && r <= 55);
   if (rsiBuyOk) {
     buyScore += 18;
     buyReasons.push(`RSI=${r.toFixed(0)} مناسب شراء`);
@@ -294,9 +325,9 @@ async function analyze(symbol) {
     sellScore += 18;
     sellReasons.push(`RSI=${r.toFixed(0)} مناسب بيع`);
   }
-  // عقوبة فقط عند تشبع حاد خارج الترند القوي
-  if (r > 88 && !strongUp) buyScore -= 15;
-  if (r < 12 && !strongDown) sellScore -= 15;
+  // عقوبة عند تشبع حاد جداً فقط في غياب الترند
+  if (r > 90 && !anyUp)   buyScore  -= 15;
+  if (r < 10 && !anyDown) sellScore -= 15;
 
   // جودة الشمعة الأخيرة
   if (candle.bullish) {
@@ -318,18 +349,18 @@ async function analyze(symbol) {
     sellReasons.push(`${trendConf.downCount}/5 شموع هابطة`);
   }
 
-  // دعم ومقاومة — في الترند القوي، القرب من المقاومة/الدعم طبيعي (كسر مستوى)
+  // دعم ومقاومة — عقوبة مخففة وفقط في غياب أي ترند
   if (!nearResistance) {
     buyScore += 10;
     buyReasons.push("بعيد عن مقاومة");
-  } else if (!strongUp) {
-    buyScore -= 20; // عقوبة فقط إذا لم يكن هناك ترند قوي
+  } else if (!anyUp) {
+    buyScore -= 12;
   }
   if (!nearSupport) {
     sellScore += 10;
     sellReasons.push("بعيد عن دعم");
-  } else if (!strongDown) {
-    sellScore -= 20; // عقوبة فقط إذا لم يكن هناك ترند قوي
+  } else if (!anyDown) {
+    sellScore -= 12;
   }
 
   // تذبذب معتدل
@@ -338,9 +369,12 @@ async function analyze(symbol) {
     sellScore += 8;
   }
 
-  // ── قاعدة صارمة: صفر مطلق ضد الترند
+  // ── صفر مطلق ضد الترند القوي فقط
   if (strongDown) buyScore = 0;
-  if (strongUp) sellScore = 0;
+  if (strongUp)   sellScore = 0;
+  // في الترند المعتدل: اخفض النقاط العكسية بدلاً من صفرها
+  if (modDown && buyScore  > 10) buyScore  = 10;
+  if (modUp   && sellScore > 10) sellScore = 10;
 
   // ── Final Decision
   const dominant = buyScore > sellScore ? "BUY" : "SELL";
