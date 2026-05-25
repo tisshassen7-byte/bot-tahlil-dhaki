@@ -218,7 +218,7 @@ async function getCandles(symbol) {
   try {
     data = await fetchOnce(symbol);
   } catch (err) {
-    logger.warn({ symbol, err: err.message }, "TwelveData fetch failed — retrying once");
+    log("WARN", "twelvedata_retry", { symbol, err: err.message });
     await new Promise((r) => setTimeout(r, 3000));
     data = await fetchOnce(symbol);
   }
