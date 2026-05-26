@@ -433,16 +433,53 @@ function noTrade(reason) {
   };
 }
 
+// ─── Welcome Image ────────────────────────────────────────────────────────────
+// صورة ترحيبية بأسلوب سايبر-تداول — استبدلها برابط صورتك الخاصة إن أردت
+const WELCOME_IMAGE_URL =
+  "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=1280&q=80";
+
 // ─── UI Helpers ───────────────────────────────────────────────────────────────
+function sendWelcome(chatId) {
+  const caption = [
+    "📡 *رادار السوق*",
+    "━━━━━━━━━━━━━━━━━━",
+    "منصة تحليل الفوركس الاحترافية",
+    "سوق حقيقي · توقيت فرنسا · خاص بك",
+    "━━━━━━━━━━━━━━━━━━",
+    "⚠️ للتحليل فقط — القرار النهائي عليك أنت.",
+  ].join("\n");
+
+  return bot.sendPhoto(chatId, WELCOME_IMAGE_URL, {
+    caption,
+    parse_mode: "Markdown",
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "▶️ ابدأ الآن", callback_data: "show_menu" }],
+      ],
+    },
+  }).catch(() =>
+    // إذا فشل تحميل الصورة، أرسل النص مباشرة
+    bot.sendMessage(chatId, caption, {
+      parse_mode: "Markdown",
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "▶️ ابدأ الآن", callback_data: "show_menu" }],
+        ],
+      },
+    }),
+  );
+}
+
 function mainMenu(chatId) {
   return bot.sendMessage(
     chatId,
-    "🏠 القائمة الرئيسية — بوت تحليل Pocket Option",
+    "📡 *رادار السوق* — القائمة الرئيسية",
     {
+      parse_mode: "Markdown",
       reply_markup: {
         inline_keyboard: [
-          [{ text: "📊 تحليل زوج", callback_data: "start_analysis" }],
-          [{ text: "🔍 Scan Top 10 Forex Pairs", callback_data: "scan_all" }],
+          [{ text: "🔍 مسح أقوى 10 أزواج", callback_data: "scan_all"       }],
+          [{ text: "📊 تحليل زوج فردي",    callback_data: "start_analysis" }],
         ],
       },
     },
@@ -556,13 +593,67 @@ function formatScanResults(buys, sells) {
   return lines.join("\n");
 }
 
+// ─── Top 10 Scan Formatter (future-entry only — hides "now" signals) ──────────
+function formatTop10Results(buys, sells) {
+  const ts    = parisTimeStr();
+  const entry = suggestedEntry();
+
+  // إذا كان وقت الدخول "الآن"، لا تعرض أي إشارات
+  if (entry.waitMins === 0) {
+    return [
+      `🔍 رادار السوق — ${ts} (فرنسا)`,
+      `━━━━━━━━━━━━━━━━━━`,
+      `⏳ وقت الدخول الحالي: الآن`,
+      ``,
+      `لا تُعرض إشارات فورية في المسح التلقائي.`,
+      `انتظر فتح الشمعة التالية وأعد المسح.`,
+      ``,
+      `━━━━━━━━━━━━━━━━━━`,
+      `🎯 Pocket Option — سوق حقيقي`,
+    ].join("\n");
+  }
+
+  const lines = [
+    `🔍 رادار السوق — ${ts} (فرنسا)`,
+    `━━━━━━━━━━━━━━━━━━`,
+    `⏰ وقت الدخول: ${entry.label}`,
+    ``,
+  ];
+
+  if (buys.length === 0 && sells.length === 0) {
+    lines.push("⚪ لا توجد إشارات واضحة على أقوى 10 أزواج الآن.");
+    lines.push("💡 جرب المسح مجدداً بعد 5–10 دقائق.");
+  } else {
+    if (buys.length > 0) {
+      lines.push(`🟢 BUY (${buys.length}):`);
+      buys
+        .sort((a, b) => b.confidence - a.confidence)
+        .forEach((e) => lines.push(`  • ${e.asset}  ${e.confidence}% [${e.grade}]`));
+    }
+    if (sells.length > 0) {
+      if (buys.length > 0) lines.push(``);
+      lines.push(`🔴 SELL (${sells.length}):`);
+      sells
+        .sort((a, b) => b.confidence - a.confidence)
+        .forEach((e) => lines.push(`  • ${e.asset}  ${e.confidence}% [${e.grade}]`));
+    }
+    lines.push(``);
+    lines.push(`📊 ${buys.length + sells.length} إشارة من ${TOP_10_PAIRS.length} زوج`);
+  }
+
+  lines.push(`━━━━━━━━━━━━━━━━━━`);
+  lines.push(`🎯 Pocket Option — سوق حقيقي`);
+  lines.push(`⚠️ القرار النهائي عليك أنت.`);
+  return lines.join("\n");
+}
+
 // ─── /start ───────────────────────────────────────────────────────────────────
 bot.onText(/\/start/i, (msg) => {
   const chatId = msg.chat.id;
   if (!isOwner(chatId)) { log("WARN", "blocked_user", { chatId }); return; }
   sessions[chatId] = {};
   log("INFO", "/start", { chatId });
-  mainMenu(chatId);
+  sendWelcome(chatId);
 });
 
 // ─── /scan ────────────────────────────────────────────────────────────────────
@@ -601,14 +692,14 @@ bot.onText(/\/scan/i, async (msg) => {
 
   log("INFO", "scan_command_done", { chatId, buys: buys.length, sells: sells.length });
 
-  return bot.editMessageText(formatScanResults(buys, sells), {
+  return bot.editMessageText(formatTop10Results(buys, sells), {
     chat_id: chatId,
     message_id: statusMsgId,
     reply_markup: {
       inline_keyboard: [
-        [{ text: "🔄 مسح مجدداً", callback_data: "scan_all" }],
-        [{ text: "📊 تحليل زوج بالتفصيل", callback_data: "start_analysis" }],
-        [{ text: "🏠 الرئيسية", callback_data: "home" }],
+        [{ text: "🔄 مسح مجدداً",       callback_data: "scan_all"       }],
+        [{ text: "📊 تحليل زوج فردي",   callback_data: "start_analysis" }],
+        [{ text: "🏠 الرئيسية",          callback_data: "home"           }],
       ],
     },
   });
@@ -627,7 +718,7 @@ bot.on("callback_query", async (q) => {
   await bot.answerCallbackQuery(q.id).catch(() => {});
   if (!sessions[chatId]) sessions[chatId] = {};
 
-  if (data === "home") return mainMenu(chatId);
+  if (data === "home" || data === "show_menu") return mainMenu(chatId);
   if (data === "start_analysis") return assetMenu(chatId);
 
   // ── Scan All Pairs
@@ -662,15 +753,14 @@ bot.on("callback_query", async (q) => {
 
     log("INFO", "scan_all_done", { chatId, buys: buys.length, sells: sells.length });
 
-    const resultText = formatScanResults(buys, sells);
-    return bot.editMessageText(resultText, {
+    return bot.editMessageText(formatTop10Results(buys, sells), {
       chat_id: chatId,
       message_id: statusMsgId,
       reply_markup: {
         inline_keyboard: [
-          [{ text: "🔄 مسح مجدداً", callback_data: "scan_all" }],
-          [{ text: "📊 تحليل زوج بالتفصيل", callback_data: "start_analysis" }],
-          [{ text: "🏠 الرئيسية", callback_data: "home" }],
+          [{ text: "🔄 مسح مجدداً",     callback_data: "scan_all"       }],
+          [{ text: "📊 تحليل زوج فردي", callback_data: "start_analysis" }],
+          [{ text: "🏠 الرئيسية",        callback_data: "home"           }],
         ],
       },
     });
