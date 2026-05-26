@@ -57,6 +57,13 @@ const ALLOWED_ASSETS = [
   "AUD/JPY", "AUD/CAD", "CAD/JPY", "CHF/JPY", "NZD/JPY",
 ];
 
+// أقوى 10 أزواج فوركس — تُستخدم في المسح اليدوي
+const TOP_10_PAIRS = [
+  "EUR/USD", "GBP/USD", "USD/JPY", "EUR/JPY",
+  "GBP/JPY", "AUD/USD", "USD/CAD", "USD/CHF",
+  "EUR/GBP", "NZD/USD",
+];
+
 // فترات زمنية عالية الخطر (UTC) - أخبار اقتصادية متكررة
 const HIGH_IMPACT_UTC_RANGES = [
   { h: 8, m: 28, endH: 8, endM: 35 }, // بداية الجلسة الأوروبية + أخبار
@@ -435,7 +442,7 @@ function mainMenu(chatId) {
       reply_markup: {
         inline_keyboard: [
           [{ text: "📊 تحليل زوج", callback_data: "start_analysis" }],
-          [{ text: "🔍 مسح جميع الأزواج", callback_data: "scan_all" }],
+          [{ text: "🔍 Scan Top 10 Forex Pairs", callback_data: "scan_all" }],
         ],
       },
     },
@@ -460,13 +467,13 @@ function assetMenu(chatId) {
 
 
 // ─── Scan All Pairs ───────────────────────────────────────────────────────────
-async function scanAllPairs(chatId, statusMsgId) {
+async function scanAllPairs(chatId, statusMsgId, pairs = TOP_10_PAIRS) {
   const buys  = [];
   const sells = [];
-  const total = ALLOWED_ASSETS.length;
+  const total = pairs.length;
 
   for (let i = 0; i < total; i++) {
-    const asset = ALLOWED_ASSETS[i];
+    const asset = pairs[i];
 
     // تحديث رسالة التقدم كل 4 أزواج
     if (i % 4 === 0) {
@@ -574,7 +581,7 @@ bot.onText(/\/scan/i, async (msg) => {
 
   const statusMsg = await bot.sendMessage(
     chatId,
-    `🔍 جاري مسح الأزواج... 0/${ALLOWED_ASSETS.length}\n⏳ يرجى الانتظار (~${Math.ceil(ALLOWED_ASSETS.length * 1.2 / 60)} دقيقة)`,
+    `🔍 جاري مسح أقوى 10 أزواج... 0/${TOP_10_PAIRS.length}\n⏳ يرجى الانتظار (~${Math.ceil(TOP_10_PAIRS.length * 1.2 / 60)} دقيقة)`,
   );
   const statusMsgId = statusMsg.message_id;
 
@@ -582,7 +589,7 @@ bot.onText(/\/scan/i, async (msg) => {
 
   let buys, sells;
   try {
-    ({ buys, sells } = await scanAllPairs(chatId, statusMsgId));
+    ({ buys, sells } = await scanAllPairs(chatId, statusMsgId, TOP_10_PAIRS));
   } catch (err) {
     log("ERROR", "scan_command_failed", { chatId, error: err.message });
     return bot.editMessageText(
@@ -602,41 +609,6 @@ bot.onText(/\/scan/i, async (msg) => {
         [{ text: "🔄 مسح مجدداً", callback_data: "scan_all" }],
         [{ text: "📊 تحليل زوج بالتفصيل", callback_data: "start_analysis" }],
         [{ text: "🏠 الرئيسية", callback_data: "home" }],
-      ],
-    },
-  });
-});
-
-// ─── /status ──────────────────────────────────────────────────────────────────
-bot.onText(/\/status/i, (msg) => {
-  const chatId = msg.chat.id;
-  if (!isOwner(chatId)) { log("WARN", "blocked_user", { chatId }); return; }
-
-  const ts = parisTimeStr();
-  const lastRun = schedulerState.lastRun
-    ? schedulerState.lastRun.toLocaleTimeString("fr-FR", { timeZone: "Europe/Paris", hour: "2-digit", minute: "2-digit" }) + " (فرنسا)"
-    : "لم يعمل بعد";
-
-  const text = [
-    `📡 حالة البوت — ${ts} (فرنسا)`,
-    `━━━━━━━━━━━━━━━━━━`,
-    `🔒 الوضع: خاص (أنت فقط)`,
-    `⚙️  المجدول: ${schedulerState.active ? "يعمل ✅" : "متوقف ❌"}`,
-    `🕒 آخر مسح: ${lastRun}`,
-    `🔁 عدد الجولات: ${schedulerState.totalRuns}`,
-    `🏅 Grade A (آخر جولة): ${schedulerState.lastGradeA}`,
-    `📤 تنبيهات أُرسلت (آخر جولة): ${schedulerState.lastSent}`,
-    `━━━━━━━━━━━━━━━━━━`,
-    `📋 الأزواج المراقبة: ${ALLOWED_ASSETS.length}`,
-    `⏱️  فترة المسح: كل 10 دقائق`,
-    `📌 شرط الإرسال: Grade A + وقت دخول مستقبلي`,
-  ].join("\n");
-
-  bot.sendMessage(chatId, text, {
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: "🔍 مسح الآن", callback_data: "scan_all" }],
-        [{ text: "🏠 الرئيسية", callback_data: "home"     }],
       ],
     },
   });
@@ -670,15 +642,15 @@ bot.on("callback_query", async (q) => {
 
     const statusMsg = await bot.sendMessage(
       chatId,
-      `🔍 جاري مسح الأزواج... 0/${ALLOWED_ASSETS.length}\n⏳ يرجى الانتظار (${Math.ceil(ALLOWED_ASSETS.length * 1.2 / 60)} دقيقة تقريباً)`,
+      `🔍 جاري مسح أقوى 10 أزواج... 0/${TOP_10_PAIRS.length}\n⏳ يرجى الانتظار (~${Math.ceil(TOP_10_PAIRS.length * 1.2 / 60)} دقيقة)`,
     );
     const statusMsgId = statusMsg.message_id;
 
-    log("INFO", "scan_all_started", { chatId, total: ALLOWED_ASSETS.length });
+    log("INFO", "scan_all_started", { chatId, total: TOP_10_PAIRS.length });
 
     let buys, sells;
     try {
-      ({ buys, sells } = await scanAllPairs(chatId, statusMsgId));
+      ({ buys, sells } = await scanAllPairs(chatId, statusMsgId, TOP_10_PAIRS));
     } catch (err) {
       log("ERROR", "scan_all_failed", { chatId, error: err.message });
       return bot.editMessageText(
@@ -785,106 +757,6 @@ bot.on("callback_query", async (q) => {
     });
   }
 });
-
-// ─── Scheduler State (for /status) ───────────────────────────────────────────
-const schedulerState = {
-  active:       true,
-  lastRun:      null,   // Date
-  lastGradeA:   0,
-  lastSent:     0,
-  totalRuns:    0,
-};
-
-// ─── Auto-Scheduler: Grade A future-entry alerts every 10 minutes ─────────────
-async function runAutoScan() {
-  if (isNewsTime()) {
-    log("INFO", "auto_scan_skipped", { reason: "news_time" });
-    return;
-  }
-
-  // حساب وقت الدخول قبل المسح — إذا كان "الآن" لا نُرسل تنبيهاً تلقائياً
-  const entry = suggestedEntry();
-  if (entry.waitMins === 0) {
-    log("INFO", "auto_scan_skipped", { reason: "entry_is_now" });
-    schedulerState.lastRun    = new Date();
-    schedulerState.totalRuns += 1;
-    return;
-  }
-
-  log("INFO", "auto_scan_start", { waitMins: entry.waitMins });
-  schedulerState.totalRuns += 1;
-
-  const gradeABuys  = [];
-  const gradeASells = [];
-
-  for (let i = 0; i < ALLOWED_ASSETS.length; i++) {
-    const asset = ALLOWED_ASSETS[i];
-    try {
-      const result = await analyze(asset);
-      if (!result.noTrade && result.grade === "A") {
-        const rec = { asset, signal: result.signal, confidence: result.confidence };
-        if (result.signal.includes("BUY"))  gradeABuys.push(rec);
-        else                                 gradeASells.push(rec);
-      }
-    } catch {
-      // تجاهل أخطاء الأزواج الفردية
-    }
-    if (i < ALLOWED_ASSETS.length - 1) await new Promise((r) => setTimeout(r, 1200));
-  }
-
-  schedulerState.lastRun   = new Date();
-  schedulerState.lastGradeA = gradeABuys.length + gradeASells.length;
-
-  const all = [...gradeABuys, ...gradeASells];
-  if (all.length === 0) {
-    log("INFO", "auto_scan_done", { gradeA: 0, sent: 0 });
-    schedulerState.lastSent = 0;
-    return; // لا إشارات Grade A — لا إرسال
-  }
-
-  log("INFO", "auto_scan_done", { gradeA: all.length, waitMins: entry.waitMins });
-  schedulerState.lastSent = all.length;
-
-  const ts    = parisTimeStr();
-  const lines = [
-    `🔔 تنبيه تلقائي — ${ts} (فرنسا)`,
-    `🏅 Grade A — دخول مقترح خلال ${entry.waitMins === 1 ? "دقيقة واحدة" : entry.waitMins + " دقائق"}`,
-    `━━━━━━━━━━━━━━━━━━`,
-    `⏰ وقت الدخول: ${entry.label}\n`,
-  ];
-
-  if (gradeABuys.length > 0) {
-    lines.push(`🟢 BUY:`);
-    gradeABuys.forEach((e) =>
-      lines.push(`  • ${e.asset}  ${e.confidence}%`),
-    );
-  }
-  if (gradeASells.length > 0) {
-    lines.push(gradeABuys.length ? `\n🔴 SELL:` : `🔴 SELL:`);
-    gradeASells.forEach((e) =>
-      lines.push(`  • ${e.asset}  ${e.confidence}%`),
-    );
-  }
-
-  lines.push(`\n━━━━━━━━━━━━━━━━━━`);
-  lines.push(`🎯 Pocket Option — سوق حقيقي`);
-  lines.push(`⚠️ القرار النهائي عليك أنت.`);
-
-  await bot.sendMessage(OWNER_ID, lines.join("\n"), {
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: "📊 تفاصيل زوج", callback_data: "start_analysis" }],
-        [{ text: "🏠 الرئيسية",   callback_data: "home"           }],
-      ],
-    },
-  }).catch((err) => log("ERROR", "auto_scan_send_failed", { error: err.message }));
-}
-
-// ابدأ المجدول بعد 30 ثانية من التشغيل ثم كل 10 دقائق
-setTimeout(() => {
-  runAutoScan();
-  setInterval(runAutoScan, 10 * 60 * 1000);
-}, 30 * 1000);
 
 // ─── Global Error Handlers ────────────────────────────────────────────────────
 process.on("unhandledRejection", (reason) => {
