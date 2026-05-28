@@ -73,7 +73,7 @@ const HIGH_IMPACT_UTC_RANGES = [
   { h: 18, m: 0, endH: 18, endM: 5 }, // إغلاق لندن
 ];
 
-const MIN_CONFIDENCE = 57; // حد أدنى للثقة
+const MIN_CONFIDENCE = 65; // حد أدنى للثقة — مرفوع لتقليل الإشارات الضعيفة
 const ANALYSIS_INTERVAL = "5min"; // إطار زمني ثابت للتحليل
 
 // ─── Logging ──────────────────────────────────────────────────────────────────
@@ -107,6 +107,19 @@ function isNewsTime() {
 function isCandleEdge() {
   const m = new Date().getUTCMinutes();
   return m <= 1 || m >= 58;
+}
+
+// ─── Quiet Session Filter (ناعم — لا يحجب الإشارات) ──────────────────────────
+// جلسات منخفضة السيولة بتوقيت UTC:
+//   00:00–06:59 → فجوة آسيوية (انتشار واسع على الأزواج الأوروبية)
+//   21:00–23:59 → ما بعد إغلاق نيويورك (حجم خفيف جداً)
+function quietSession() {
+  const h = new Date().getUTCHours();
+  const isQuiet = h < 7 || h >= 21;
+  const warning = isQuiet
+    ? "⚠️ جلسة هادئة — سيولة منخفضة، الإشارة أقل موثوقية"
+    : null;
+  return { isQuiet, warning };
 }
 
 // ─── Technical Indicators ─────────────────────────────────────────────────────
@@ -158,6 +171,47 @@ function sma(values, period) {
   return values.slice(-period).reduce((a, b) => a + b, 0) / period;
 }
 
+// ─── Synthetic Higher-Timeframe (no extra API call) ──────────────────────────
+// يجمع كل groupSize شموع 5-دقائق في شمعة واحدة محاكاة للإطار الأعلى (15 دقيقة)
+function syntheticHTF(candles, groupSize = 3) {
+  const grouped = [];
+  for (let i = 0; i + groupSize <= candles.length; i += groupSize) {
+    const g = candles.slice(i, i + groupSize);
+    grouped.push({
+      open:  g[0].open,
+      high:  Math.max(...g.map((c) => c.high)),
+      low:   Math.min(...g.map((c) => c.low)),
+      close: g[g.length - 1].close,
+    });
+  }
+  return grouped;
+}
+
+// يحدد اتجاه الإطار الأعلى باستخدام EMA9 و EMA21 على الشموع المحاكاة
+function htfBias(candles5min) {
+  const htf = syntheticHTF(candles5min, 3); // 5min → ~15min
+  if (htf.length < 22) return { htfUp: false, htfDown: false, htfClear: false };
+  const htfCloses = htf.map((c) => c.close);
+  const htfE9  = ema(htfCloses, 9);
+  const htfE21 = ema(htfCloses, 21);
+  if (!htfE9 || !htfE21) return { htfUp: false, htfDown: false, htfClear: false };
+  const htfLast = htfCloses[htfCloses.length - 1];
+  const htfUp   = htfE9 > htfE21 && htfLast > htfE21;
+  const htfDown = htfE9 < htfE21 && htfLast < htfE21;
+  return { htfUp, htfDown, htfClear: htfUp || htfDown };
+}
+
+// ─── Suggested Expiry (توصية مدة الصفقة) ─────────────────────────────────────
+// يعطي توصية عربية بناءً على التذبذب وقوة الترند
+function suggestExpiry(volRatio, isStrongTrend) {
+  // سوق هادئ جداً: السعر يتحرك ببطء — دقيقة واحدة غير كافية
+  if (volRatio < 0.0002) return "5 دقائق";
+  // تذبذب مرتفع جداً: السوق صاخب — تقليل وقت التعرض
+  if (volRatio > 0.002)  return "دقيقة واحدة";
+  // تذبذب معتدل: يُفضَّل 5 دقائق مع ترند قوي، دقيقة مع ترند معتدل
+  return isStrongTrend ? "5 دقائق" : "دقيقة واحدة";
+}
+
 // ─── Candle Quality ───────────────────────────────────────────────────────────
 function candleQuality(candles) {
   const c = candles[candles.length - 1];
@@ -165,9 +219,70 @@ function candleQuality(candles) {
   const body = Math.abs(c.close - c.open);
   const range = c.high - c.low || 0.000001;
   const bodyRatio = body / range;
-  const bullish = c.close > c.open && c.close > prev.close && bodyRatio >= 0.5;
-  const bearish = c.close < c.open && c.close < prev.close && bodyRatio >= 0.5;
+  const bullish = c.close > c.open && c.close > prev.close && bodyRatio >= 0.55; // مرفوع: شمعة صاعدة أقوى
+  const bearish = c.close < c.open && c.close < prev.close && bodyRatio >= 0.55; // مرفوع: شمعة هابطة أقوى
   return { bullish, bearish, bodyRatio };
+}
+
+// ─── Candle Pattern Detector (تأكيد فقط — لا تُطلق إشارة منفردة) ─────────────
+function candlePatterns(candles) {
+  if (candles.length < 2) return [];
+  const c    = candles[candles.length - 1];
+  const prev = candles[candles.length - 2];
+
+  const cBody      = Math.abs(c.close - c.open);
+  const cRange     = c.high - c.low || 0.000001;
+  const cBodyTop   = Math.max(c.open, c.close);
+  const cBodyBot   = Math.min(c.open, c.close);
+  const cUpperWick = c.high  - cBodyTop;
+  const cLowerWick = cBodyBot - c.low;
+
+  const prevBodyTop = Math.max(prev.open, prev.close);
+  const prevBodyBot = Math.min(prev.open, prev.close);
+
+  const found = [];
+
+  // ── ابتلاع صاعد: شمعة صاعدة تبتلع جسم الشمعة الهابطة السابقة
+  if (
+    c.close > c.open &&
+    prev.close < prev.open &&
+    cBodyBot <= prevBodyBot &&
+    cBodyTop >= prevBodyTop &&
+    cBody > 0.5 * cRange       // جسم قوي
+  ) {
+    found.push({ name: "ابتلاع صاعد", bullish: true, score: 10 });
+  }
+
+  // ── ابتلاع هابط: شمعة هابطة تبتلع جسم الشمعة الصاعدة السابقة
+  if (
+    c.close < c.open &&
+    prev.close > prev.open &&
+    cBodyTop >= prevBodyTop &&
+    cBodyBot <= prevBodyBot &&
+    cBody > 0.5 * cRange
+  ) {
+    found.push({ name: "ابتلاع هابط", bullish: false, score: 10 });
+  }
+
+  // ── مطرقة / باين بار صاعد: ذيل سفلي طويل، إغلاق في النصف العلوي
+  if (
+    cLowerWick >= 2 * Math.max(cBody, 0.000001) &&
+    cLowerWick > cUpperWick * 2 &&
+    c.close > (c.high + c.low) / 2
+  ) {
+    found.push({ name: "مطرقة / باين بار صاعد", bullish: true, score: 8 });
+  }
+
+  // ── نجمة ساقطة / باين بار هابط: ذيل علوي طويل، إغلاق في النصف السفلي
+  if (
+    cUpperWick >= 2 * Math.max(cBody, 0.000001) &&
+    cUpperWick > cLowerWick * 2 &&
+    c.close < (c.high + c.low) / 2
+  ) {
+    found.push({ name: "نجمة ساقطة / باين بار هابط", bullish: false, score: 8 });
+  }
+
+  return found;
 }
 
 // ─── Multi-candle Trend Confirmation ─────────────────────────────────────────
@@ -192,10 +307,54 @@ function supportResistance(closes, last) {
   return { high, low, nearResistance, nearSupport };
 }
 
+// ─── S/R Zone Detection (مناطق دعم ومقاومة قوية بالقمم والقيعان) ─────────────
+// يحدد مناطق ذات لمسات متعددة ويفحص مدى قرب السعر منها
+function srZones(candles) {
+  const slice = candles.slice(-70); // آخر 70 شمعة
+  const last  = slice[slice.length - 1].close;
+
+  // جمع القمم والقيعان المحورية (pivot highs / pivot lows)
+  const swingHighs = [];
+  const swingLows  = [];
+  for (let i = 1; i < slice.length - 1; i++) {
+    if (slice[i].high > slice[i - 1].high && slice[i].high > slice[i + 1].high) {
+      swingHighs.push(slice[i].high);
+    }
+    if (slice[i].low < slice[i - 1].low && slice[i].low < slice[i + 1].low) {
+      swingLows.push(slice[i].low);
+    }
+  }
+
+  // تجميع النقاط المتقاربة في مناطق (zone clustering)
+  const CLUSTER_PCT = 0.0015; // 0.15% هامش التجميع
+  function cluster(points) {
+    const zones = [];
+    for (const p of points) {
+      const z = zones.find((z) => Math.abs(z.price - p) / p < CLUSTER_PCT);
+      if (z) { z.price = (z.price + p) / 2; z.touches++; }
+      else    { zones.push({ price: p, touches: 1 }); }
+    }
+    return zones.filter((z) => z.touches >= 2); // منطقة قوية: لمستان أو أكثر
+  }
+
+  const PROX = 0.002; // 0.2% قرب السعر من المنطقة
+  const resistZones = cluster(swingHighs).filter((z) => z.price > last);
+  const supportZones = cluster(swingLows).filter((z) => z.price < last);
+
+  const nearStrongResistance = resistZones.some(
+    (z) => (z.price - last) / last < PROX,
+  );
+  const nearStrongSupport = supportZones.some(
+    (z) => (last - z.price) / last < PROX,
+  );
+
+  return { nearStrongResistance, nearStrongSupport };
+}
+
 // ─── Grade ────────────────────────────────────────────────────────────────────
 function grade(score) {
   if (score >= 90) return "A";
-  if (score >= 78) return "B";
+  if (score >= 82) return "B"; // رُفع من 78 — Grade B يتطلب إعداداً أنظف
   return "C";
 }
 
@@ -298,6 +457,7 @@ async function analyze(symbol) {
   const { nearResistance, nearSupport } = supportResistance(closes, last);
   const candle = candleQuality(candles);
   const trendConf = trendConfirmation(candles);
+  const srCheck = srZones(candles);
 
   // ── Hard filters (خطر حقيقي فقط)
   if (tooDead)
@@ -305,6 +465,9 @@ async function analyze(symbol) {
   if (tooWild) return noTrade("🔴 تذبذب شديد: الخطر عالٍ جداً");
   if (!anyUp && !anyDown)
     return noTrade("⚪ لا يوجد اتجاه: EMAs متشابكة في جميع الاتجاهات");
+  // EMAs متقاربة جداً بدون ترند قوي = سوق فوضوي
+  if (emaSep < 0.00005 && !strongUp && !strongDown)
+    return noTrade("⚪ EMAs متشابكة: لا اتجاه واضح — سوق فوضوي");
 
   // ── Scoring
   let buyScore = 0,
@@ -328,15 +491,9 @@ async function analyze(symbol) {
     sellReasons.push("ترند هابط معتدل (EMA 9<21<50)");
   }
 
-  // طرح بسيط عند EMAs قريبة جداً (لا حجب)
-  if (emaSep < 0.00005) {
-    buyScore  -= 8;
-    sellScore -= 8;
-  }
-
   // RSI — نطاق واسع في الترند
-  const rsiBuyOk  = anyUp   ? (r >= 38 && r <= 90) : (r >= 45 && r <= 72);
-  const rsiSellOk = anyDown ? (r >= 10 && r <= 62) : (r >= 28 && r <= 55);
+  const rsiBuyOk  = anyUp   ? (r >= 38 && r <= 85) : (r >= 45 && r <= 70);
+  const rsiSellOk = anyDown ? (r >= 15 && r <= 62) : (r >= 30 && r <= 55);
   if (rsiBuyOk) {
     buyScore += 18;
     buyReasons.push(`RSI=${r.toFixed(0)} مناسب شراء`);
@@ -345,9 +502,17 @@ async function analyze(symbol) {
     sellScore += 18;
     sellReasons.push(`RSI=${r.toFixed(0)} مناسب بيع`);
   }
-  // عقوبة عند تشبع حاد جداً فقط في غياب الترند
-  if (r > 90 && !anyUp)   buyScore  -= 15;
-  if (r < 10 && !anyDown) sellScore -= 15;
+  // عقوبة قوية عند تشبع شرائي/بيعي حاد بدون ترند قوي
+  if (r > 80 && !strongUp)   buyScore  -= 20;
+  if (r < 20 && !strongDown) sellScore -= 20;
+  if (r > 90 && !anyUp)      buyScore  -= 15;
+  if (r < 10 && !anyDown)    sellScore -= 15;
+
+  // عقوبة شمعة ضعيفة (doji / تردد): إشارة متضاربة
+  if (candle.bodyRatio < 0.35) {
+    buyScore  -= 14;
+    sellScore -= 14;
+  }
 
   // جودة الشمعة الأخيرة
   if (candle.bullish) {
@@ -363,14 +528,28 @@ async function analyze(symbol) {
   if (anyUp   && rsiBuyOk  && candle.bullish) { buyScore  += 7; buyReasons.push("زخم متوافق"); }
   if (anyDown && rsiSellOk && candle.bearish) { sellScore += 7; sellReasons.push("زخم متوافق"); }
 
-  // تأكيد متعدد الشموع (3 من 5)
-  if (trendConf.upCount >= 3) {
+  // تأكيد متعدد الشموع — 4/5 للمكافأة الكاملة، 3/5 للمكافأة الجزئية فقط
+  if (trendConf.upCount >= 4) {
     buyScore += 12;
     buyReasons.push(`${trendConf.upCount}/5 شموع صاعدة`);
+  } else if (trendConf.upCount === 3) {
+    buyScore += 5;
+    buyReasons.push(`${trendConf.upCount}/5 شموع صاعدة`);
   }
-  if (trendConf.downCount >= 3) {
+  if (trendConf.downCount >= 4) {
     sellScore += 12;
     sellReasons.push(`${trendConf.downCount}/5 شموع هابطة`);
+  } else if (trendConf.downCount === 3) {
+    sellScore += 5;
+    sellReasons.push(`${trendConf.downCount}/5 شموع هابطة`);
+  }
+
+  // أنماط الشموع — تأكيد فقط، لا تُطلق إشارة منفردة
+  // يتم تطبيقها قبل الصفر العكسي للترند، لذا لن تنقذ أي إشارة عكسية
+  const patterns = candlePatterns(candles);
+  for (const p of patterns) {
+    if (p.bullish) { buyScore  += p.score; buyReasons.push(p.name);  }
+    else            { sellScore += p.score; sellReasons.push(p.name); }
   }
 
   // دعم ومقاومة — عقوبة مخففة وفقط في غياب أي ترند
@@ -393,12 +572,12 @@ async function analyze(symbol) {
     sellScore += 8;
   }
 
-  // ── صفر مطلق ضد الترند القوي فقط
+  // ── صفر مطلق ضد الترند — القوي والمعتدل على حدٍّ سواء
   if (strongDown) buyScore = 0;
   if (strongUp)   sellScore = 0;
-  // في الترند المعتدل: اخفض النقاط العكسية بدلاً من صفرها
-  if (modDown && buyScore  > 10) buyScore  = 10;
-  if (modUp   && sellScore > 10) sellScore = 10;
+  // الترند المعتدل: إلغاء كامل للإشارة العكسية (بدلاً من الحد السابق 10)
+  if (modDown) buyScore  = 0;
+  if (modUp)   sellScore = 0;
 
   // ── Final Decision
   const dominant = buyScore > sellScore ? "BUY" : "SELL";
@@ -410,15 +589,80 @@ async function analyze(symbol) {
     return noTrade(
       `⚪ الثقة غير كافية (${dominantScore}%) — الجودة أهم من الكمية`,
     );
-  if (dominantScore - opposite < 6)
-    return noTrade("⚪ إشارة متعارضة: لا أفضلية واضحة بين BUY و SELL");
+  // فجوة أوسع: فرق أقل من 18 نقطة = إشارة غير حاسمة
+  if (dominantScore - opposite < 18)
+    return noTrade("⚪ إشارة غير حاسمة: لا أفضلية واضحة بين BUY و SELL");
 
-  const confidence = Math.min(93, dominantScore);
+  // الترند المعتدل يُسقَّف عند 88% — Grade A محجوزة للترند القوي فقط
+  const isStrongTrend = dominant === "BUY" ? strongUp : strongDown;
+  const rawConfidence = isStrongTrend
+    ? Math.min(93, dominantScore)
+    : Math.min(88, dominantScore);
+
+  // ── فلتر الإطار الزمني الأعلى (خفيف — بدون طلبات API إضافية)
+  // يُشتق اتجاه ~15 دقيقة من تجميع شموع 5 دقائق الموجودة
+  const { htfUp, htfDown, htfClear } = htfBias(candles);
+  const htfConflict  = (dominant === "BUY"  && htfDown)
+                     || (dominant === "SELL" && htfUp);
+  const htfConfirms  = (dominant === "BUY"  && htfUp)
+                     || (dominant === "SELL" && htfDown);
+
+  let confidence = rawConfidence;
+  if (htfConflict) {
+    // تعارض مع الإطار الأعلى: خصم خفيف 10 نقاط
+    confidence = rawConfidence - 10;
+    if (confidence < MIN_CONFIDENCE)
+      return noTrade("⚪ تعارض مع اتجاه ~15 دقيقة — إشارة ضعيفة");
+  } else if (htfConfirms) {
+    // توافق مع الإطار الأعلى: مكافأة خفيفة 4 نقاط
+    const ceil = isStrongTrend ? 93 : 88;
+    confidence = Math.min(ceil, rawConfidence + 4);
+  }
+  // إذا كان الإطار الأعلى غير واضح (htfClear=false): لا تغيير
+
+  // ── فلتر الجلسة الهادئة (ناعم — يخفض الثقة فقط، لا يحجب الإشارة)
+  const { isQuiet, warning: sessionWarning } = quietSession();
+  const finalConfidence = isQuiet
+    ? Math.max(0, confidence - 7)
+    : confidence;
+
+  // إذا أدى الخصم إلى انخفاض عن الحد الأدنى، أعد التحقق ولكن لا تحجب تلقائياً
+  if (finalConfidence < MIN_CONFIDENCE) {
+    return noTrade(
+      sessionWarning
+        ? `⚪ الثقة غير كافية بعد خصم الجلسة الهادئة (${finalConfidence}%)`
+        : `⚪ الثقة غير كافية (${finalConfidence}%) — الجودة أهم من الكمية`,
+    );
+  }
+
+  // ── مناطق الدعم والمقاومة القوية (ناعم — تحذير + خصم خفيف فقط)
+  let zoneConfidence = finalConfidence;
+  if (dominant === "BUY" && srCheck.nearStrongResistance) {
+    reasons.push("⚠️ قريب من مقاومة قوية — توخَّ الحذر");
+    zoneConfidence = Math.max(0, finalConfidence - 5);
+  } else if (dominant === "SELL" && srCheck.nearStrongSupport) {
+    reasons.push("⚠️ قريب من دعم قوي — توخَّ الحذر");
+    zoneConfidence = Math.max(0, finalConfidence - 5);
+  }
+  // إذا أسقط الخصم الإشارة، أعد رفضها بتوضيح السبب
+  if (zoneConfidence < MIN_CONFIDENCE) {
+    return noTrade(`⚪ الثقة غير كافية بعد احتساب المنطقة (${zoneConfidence}%)`);
+  }
+
   return {
     signal: dominant === "BUY" ? "🟢 BUY" : "🔴 SELL",
-    confidence,
-    grade: grade(confidence),
+    confidence: zoneConfidence,
+    grade: grade(zoneConfidence),
     reason: reasons.join(" ✦ "),
+    expiry: suggestExpiry(volRatio, isStrongTrend),
+    sessionWarning,
+    meta: {
+      trendStrong: dominant === "BUY" ? strongUp : strongDown,
+      trendUp:     dominant === "BUY",
+      rsi:         r,
+      candleDir:   dominant === "BUY" ? candle.bullish : candle.bearish,
+      nearZone:    dominant === "BUY" ? srCheck.nearStrongResistance : srCheck.nearStrongSupport,
+    },
     noTrade: false,
   };
 }
@@ -431,6 +675,42 @@ function noTrade(reason) {
     reason,
     noTrade: true,
   };
+}
+
+// ─── Signal Checklist (بصري فقط — لا يؤثر على الإشارات) ─────────────────────
+function buildChecklist(result) {
+  const isBuy = result.signal.includes("BUY");
+  const m = result.meta;
+
+  const trendIcon = m.trendStrong ? "✅" : "⚠️";
+  const trendText = m.trendStrong
+    ? (isBuy ? "ترند صاعد قوي"    : "ترند هابط قوي")
+    : (isBuy ? "ترند صاعد معتدل" : "ترند هابط معتدل");
+
+  const rsiOk   = isBuy ? (m.rsi >= 38 && m.rsi <= 85) : (m.rsi >= 15 && m.rsi <= 62);
+  const rsiIcon = rsiOk ? "✅" : "⚠️";
+
+  const candleIcon = m.candleDir ? "✅" : "⚠️";
+  const candleText = m.candleDir
+    ? (isBuy ? "شمعة صاعدة مؤكدة"  : "شمعة هابطة مؤكدة")
+    : (isBuy ? "شمعة غير مؤكدة"   : "شمعة غير مؤكدة");
+
+  const zoneIcon = m.nearZone ? "⚠️" : "✅";
+  const zoneText = m.nearZone
+    ? (isBuy ? "قرب مقاومة قوية" : "قرب دعم قوي")
+    : "بعيد عن مناطق خطر";
+
+  const sessionIcon = result.sessionWarning ? "⚠️" : "✅";
+  const sessionText = result.sessionWarning ? "جلسة هادئة" : "جلسة نشطة";
+
+  return [
+    `📋 ملخص سريع:`,
+    `${trendIcon} الترند: ${trendText}`,
+    `${rsiIcon} RSI: ${m.rsi.toFixed(0)}`,
+    `${candleIcon} الشمعة: ${candleText}`,
+    `${zoneIcon} المنطقة: ${zoneText}`,
+    `${sessionIcon} الجلسة: ${sessionText}`,
+  ].join("\n");
 }
 
 // ─── Welcome Image ────────────────────────────────────────────────────────────
@@ -522,7 +802,8 @@ async function scanAllPairs(chatId, statusMsgId, pairs = TOP_10_PAIRS) {
 
     try {
       const result = await analyze(asset);
-      if (!result.noTrade) {
+      // Grade C مُستبعدة من نتائج المسح — الجودة فقط (A و B)
+      if (!result.noTrade && result.grade !== "C") {
         const entry = { asset, signal: result.signal, confidence: result.confidence, grade: result.grade, reason: result.reason };
         if (result.signal.includes("BUY"))  buys.push(entry);
         else                                 sells.push(entry);
@@ -833,9 +1114,11 @@ bot.on("callback_query", async (q) => {
       grade: result.grade,
     });
 
+    const sessionLine = (!result.noTrade && result.sessionWarning)
+      ? `\n${result.sessionWarning}` : "";
     const replyText = result.noTrade
       ? `📊 نتيجة التحليل — ${asset}\n\nالنتيجة: ${result.signal}\n\n📌 السبب: ${result.reason}\n\n━━━━━━━━━━━━━━━━━━\n🎯 المنصة: Pocket Option — سوق حقيقي\n⚠️ القرار النهائي عليك أنت.`
-      : `📊 نتيجة التحليل — ${asset}\n\nالنتيجة: ${result.signal}\n\n🎯 نسبة الثقة: ${result.confidence}%\n🏅 التقييم: ${result.grade}\n\n✅ الأسباب: ${result.reason}\n\n━━━━━━━━━━━━━━━━━━\n🎯 المنصة: Pocket Option — سوق حقيقي\n⚠️ القرار النهائي عليك أنت. لا تعتمد على إشارة واحدة.`;
+      : `📊 نتيجة التحليل — ${asset}\n\nالنتيجة: ${result.signal}\n\n🎯 نسبة الثقة: ${result.confidence}%\n🏅 التقييم: ${result.grade}\n⏱️ مدة الصفقة المقترحة: ${result.expiry}${sessionLine}\n\n✅ الأسباب: ${result.reason}\n\n${buildChecklist(result)}\n\n━━━━━━━━━━━━━━━━━━\n🎯 المنصة: Pocket Option — سوق حقيقي\n⚠️ القرار النهائي عليك أنت. لا تعتمد على إشارة واحدة.`;
 
     return bot.sendMessage(chatId, replyText, {
       reply_markup: {
