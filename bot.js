@@ -722,10 +722,10 @@ const WELCOME_IMAGE_URL =
 function sendWelcome(chatId) {
   const caption = [
     "📡 *رادار السوق*",
-    "━━━━━━━━━━━━━━━━━━",
+    "═══════════════════",
     "منصة تحليل الفوركس الاحترافية",
     "سوق حقيقي · توقيت فرنسا · خاص بك",
-    "━━━━━━━━━━━━━━━━━━",
+    "═══════════════════",
     "⚠️ للتحليل فقط — القرار النهائي عليك أنت.",
   ].join("\n");
 
@@ -753,12 +753,19 @@ function sendWelcome(chatId) {
 function mainMenu(chatId) {
   return bot.sendMessage(
     chatId,
-    "📡 *رادار السوق* — القائمة الرئيسية",
+    [
+      "📡 *رادار السوق*",
+      "═══════════════════",
+      "تحليل فوركس احترافي · 24/7",
+      "═══════════════════",
+      "اختر الخدمة:",
+    ].join("\n"),
     {
       parse_mode: "Markdown",
       reply_markup: {
         inline_keyboard: [
           [{ text: "🔍 مسح أقوى 10 أزواج", callback_data: "scan_all"       }],
+          [{ text: "🔥 صفقة VIP",           callback_data: "vip_trade"      }],
           [{ text: "📊 تحليل زوج فردي",    callback_data: "start_analysis" }],
         ],
       },
@@ -777,9 +784,14 @@ function assetMenu(chatId) {
     );
   }
   rows.push([{ text: "🏠 الرئيسية", callback_data: "home" }]);
-  return bot.sendMessage(chatId, "💱 اختر الزوج (سوق حقيقي فقط):", {
-    reply_markup: { inline_keyboard: rows },
-  });
+  return bot.sendMessage(
+    chatId,
+    "📊 *تحليل زوج فردي*\n═══════════════════\nاختر الزوج من السوق الحقيقي:",
+    {
+      parse_mode: "Markdown",
+      reply_markup: { inline_keyboard: rows },
+    },
+  );
 }
 
 
@@ -795,7 +807,7 @@ async function scanAllPairs(chatId, statusMsgId, pairs = TOP_10_PAIRS) {
     // تحديث رسالة التقدم كل 4 أزواج
     if (i % 4 === 0) {
       await bot.editMessageText(
-        `🔍 جاري مسح الأزواج... ${i}/${total}\n⏳ يرجى الانتظار`,
+        `🔍 جاري مسح الأزواج...\n⏳ ${i} / ${total} — يرجى الانتظار`,
         { chat_id: chatId, message_id: statusMsgId },
       ).catch(() => {});
     }
@@ -819,6 +831,79 @@ async function scanAllPairs(chatId, statusMsgId, pairs = TOP_10_PAIRS) {
   return { buys, sells };
 }
 
+// ─── VIP Trade Scanner ────────────────────────────────────────────────────────
+// يبحث عن أفضل صفقة واحدة بجودة ذهبية (Grade A أو B نظيف فقط)
+async function scanVIP(chatId, statusMsgId) {
+  const candidates = [];
+  const total = TOP_10_PAIRS.length;
+
+  for (let i = 0; i < total; i++) {
+    const asset = TOP_10_PAIRS[i];
+
+    if (i % 3 === 0) {
+      await bot.editMessageText(
+        `🔥 جاري البحث عن صفقة VIP...\n⏳ ${i} / ${total} — يرجى الانتظار`,
+        { chat_id: chatId, message_id: statusMsgId },
+      ).catch(() => {});
+    }
+
+    try {
+      const result = await analyze(asset);
+      if (!result.noTrade && result.grade !== "C") {
+        const isGradeA = result.grade === "A";
+        // Grade B مقبول فقط إذا كان نظيفاً: بعيد عن مناطق خطر وجلسة نشطة
+        const isCleanB = result.grade === "B"
+          && !result.meta.nearZone
+          && !result.sessionWarning;
+
+        if (isGradeA || isCleanB) {
+          // يُفضَّل Grade A بإضافة نقاط وهمية للترتيب
+          const vipScore = isGradeA ? result.confidence + 10 : result.confidence;
+          candidates.push({ asset, result, vipScore });
+        }
+      }
+    } catch {
+      // تجاهل أخطاء الأزواج الفردية
+    }
+
+    if (i < total - 1) await new Promise((r) => setTimeout(r, 1200));
+  }
+
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => b.vipScore - a.vipScore);
+  return candidates[0];
+}
+
+// ─── VIP Trade Formatter ──────────────────────────────────────────────────────
+function formatVIPResult(asset, result) {
+  const SEP   = "═══════════════════";
+  const entry = suggestedEntry();
+  const ts    = parisTimeStr();
+
+  return [
+    `🔥 صفقة VIP`,
+    SEP,
+    `📅 ${ts} (فرنسا)`,
+    ``,
+    `💱 الزوج: ${asset}`,
+    `الاتجاه: ${result.signal}`,
+    ``,
+    `🎯 الثقة: ${result.confidence}%   🏅 التقييم: ${result.grade}`,
+    `⏱️ مدة الصفقة: ${result.expiry}`,
+    `⏰ وقت الدخول: ${entry.label}`,
+    ...(result.sessionWarning ? [result.sessionWarning] : []),
+    ``,
+    `📌 الأسباب:`,
+    result.reason,
+    ``,
+    buildChecklist(result),
+    ``,
+    SEP,
+    `💎 صفقة واحدة · جودة ذهبية`,
+    `⚠️ القرار النهائي عليك أنت.`,
+  ].join("\n");
+}
+
 // ─── Suggested Entry Time (5min candle logic) ─────────────────────────────────
 function suggestedEntry() {
   const paris = parisNow();
@@ -840,9 +925,10 @@ function suggestedEntry() {
 }
 
 function formatScanResults(buys, sells) {
-  const ts = parisTimeStr();
+  const SEP   = "═══════════════════";
+  const ts    = parisTimeStr();
   const entry = suggestedEntry();
-  const lines = [`🔍 نتائج المسح — ${ts} (فرنسا)`, `━━━━━━━━━━━━━━━━━━`];
+  const lines = [`📡 رادار السوق — ${ts} (فرنسا)`, SEP];
 
   if (buys.length === 0 && sells.length === 0) {
     lines.push("⚪ لا توجد إشارات واضحة الآن على أي زوج.");
@@ -854,7 +940,7 @@ function formatScanResults(buys, sells) {
       buys
         .sort((a, b) => b.confidence - a.confidence)
         .forEach((e) =>
-          lines.push(`  • ${e.asset}  ${e.confidence}% [${e.grade}] — دخول: ${entry.label}`),
+          lines.push(`  ◈ ${e.asset}   ${e.confidence}%  [${e.grade}]`),
         );
     }
     if (sells.length > 0) {
@@ -862,41 +948,42 @@ function formatScanResults(buys, sells) {
       sells
         .sort((a, b) => b.confidence - a.confidence)
         .forEach((e) =>
-          lines.push(`  • ${e.asset}  ${e.confidence}% [${e.grade}] — دخول: ${entry.label}`),
+          lines.push(`  ◈ ${e.asset}   ${e.confidence}%  [${e.grade}]`),
         );
     }
-    lines.push(`\n📊 المجموع: ${buys.length + sells.length} إشارة من ${ALLOWED_ASSETS.length} زوج`);
+    lines.push(`\n📊 ${buys.length + sells.length} إشارة من ${ALLOWED_ASSETS.length} زوج`);
   }
 
-  lines.push(`\n━━━━━━━━━━━━━━━━━━`);
-  lines.push(`🎯 المنصة: Pocket Option — سوق حقيقي`);
+  lines.push(`\n${SEP}`);
+  lines.push(`🎯 Pocket Option — سوق حقيقي`);
   lines.push(`⚠️ القرار النهائي عليك أنت.`);
   return lines.join("\n");
 }
 
 // ─── Top 10 Scan Formatter (future-entry only — hides "now" signals) ──────────
 function formatTop10Results(buys, sells) {
+  const SEP   = "═══════════════════";
   const ts    = parisTimeStr();
   const entry = suggestedEntry();
 
   // إذا كان وقت الدخول "الآن"، لا تعرض أي إشارات
   if (entry.waitMins === 0) {
     return [
-      `🔍 رادار السوق — ${ts} (فرنسا)`,
-      `━━━━━━━━━━━━━━━━━━`,
+      `📡 رادار السوق — ${ts} (فرنسا)`,
+      SEP,
       `⏳ وقت الدخول الحالي: الآن`,
       ``,
       `لا تُعرض إشارات فورية في المسح التلقائي.`,
       `انتظر فتح الشمعة التالية وأعد المسح.`,
       ``,
-      `━━━━━━━━━━━━━━━━━━`,
+      SEP,
       `🎯 Pocket Option — سوق حقيقي`,
     ].join("\n");
   }
 
   const lines = [
-    `🔍 رادار السوق — ${ts} (فرنسا)`,
-    `━━━━━━━━━━━━━━━━━━`,
+    `📡 رادار السوق — ${ts} (فرنسا)`,
+    SEP,
     `⏰ وقت الدخول: ${entry.label}`,
     ``,
   ];
@@ -909,20 +996,20 @@ function formatTop10Results(buys, sells) {
       lines.push(`🟢 BUY (${buys.length}):`);
       buys
         .sort((a, b) => b.confidence - a.confidence)
-        .forEach((e) => lines.push(`  • ${e.asset}  ${e.confidence}% [${e.grade}]`));
+        .forEach((e) => lines.push(`  ◈ ${e.asset}   ${e.confidence}%  [${e.grade}]`));
     }
     if (sells.length > 0) {
       if (buys.length > 0) lines.push(``);
       lines.push(`🔴 SELL (${sells.length}):`);
       sells
         .sort((a, b) => b.confidence - a.confidence)
-        .forEach((e) => lines.push(`  • ${e.asset}  ${e.confidence}% [${e.grade}]`));
+        .forEach((e) => lines.push(`  ◈ ${e.asset}   ${e.confidence}%  [${e.grade}]`));
     }
     lines.push(``);
     lines.push(`📊 ${buys.length + sells.length} إشارة من ${TOP_10_PAIRS.length} زوج`);
   }
 
-  lines.push(`━━━━━━━━━━━━━━━━━━`);
+  lines.push(SEP);
   lines.push(`🎯 Pocket Option — سوق حقيقي`);
   lines.push(`⚠️ القرار النهائي عليك أنت.`);
   return lines.join("\n");
@@ -946,14 +1033,14 @@ bot.onText(/\/scan/i, async (msg) => {
   if (isNewsTime()) {
     return bot.sendMessage(
       chatId,
-      "📰 فلتر الأخبار: يُحتمل وجود خبر اقتصادي مؤثر الآن.\n⚠️ تجنب المسح خلال فترات الأخبار.",
+      "📰 تنبيه — وقت أخبار\n═══════════════════\nيُحتمل وجود خبر اقتصادي مؤثر الآن.\n⚠️ تجنب الدخول خلال فترات الأخبار.",
       { reply_markup: { inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]] } },
     );
   }
 
   const statusMsg = await bot.sendMessage(
     chatId,
-    `🔍 جاري مسح أقوى 10 أزواج... 0/${TOP_10_PAIRS.length}\n⏳ يرجى الانتظار (~${Math.ceil(TOP_10_PAIRS.length * 1.2 / 60)} دقيقة)`,
+    `🔍 جاري مسح أقوى 10 أزواج...\n⏳ 0 / ${TOP_10_PAIRS.length} — يرجى الانتظار`,
   );
   const statusMsgId = statusMsg.message_id;
 
@@ -965,7 +1052,7 @@ bot.onText(/\/scan/i, async (msg) => {
   } catch (err) {
     log("ERROR", "scan_command_failed", { chatId, error: err.message });
     return bot.editMessageText(
-      "❌ خطأ أثناء المسح. تحقق من مفتاح TwelveData وأعد المحاولة.",
+      "❌ خطأ أثناء المسح\n═══════════════════\nتحقق من مفتاح TwelveData وأعد المحاولة.",
       { chat_id: chatId, message_id: statusMsgId,
         reply_markup: { inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]] } },
     );
@@ -1007,14 +1094,14 @@ bot.on("callback_query", async (q) => {
     if (isNewsTime()) {
       return bot.sendMessage(
         chatId,
-        "📰 فلتر الأخبار: يُحتمل وجود خبر اقتصادي مؤثر الآن.\n⚠️ تجنب المسح خلال فترات الأخبار.",
+        "📰 تنبيه — وقت أخبار\n═══════════════════\nيُحتمل وجود خبر اقتصادي مؤثر الآن.\n⚠️ تجنب الدخول خلال فترات الأخبار.",
         { reply_markup: { inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]] } },
       );
     }
 
     const statusMsg = await bot.sendMessage(
       chatId,
-      `🔍 جاري مسح أقوى 10 أزواج... 0/${TOP_10_PAIRS.length}\n⏳ يرجى الانتظار (~${Math.ceil(TOP_10_PAIRS.length * 1.2 / 60)} دقيقة)`,
+      `🔍 جاري مسح أقوى 10 أزواج...\n⏳ 0 / ${TOP_10_PAIRS.length} — يرجى الانتظار`,
     );
     const statusMsgId = statusMsg.message_id;
 
@@ -1026,7 +1113,7 @@ bot.on("callback_query", async (q) => {
     } catch (err) {
       log("ERROR", "scan_all_failed", { chatId, error: err.message });
       return bot.editMessageText(
-        "❌ خطأ أثناء المسح. تحقق من مفتاح TwelveData وأعد المحاولة.",
+        "❌ خطأ أثناء المسح\n═══════════════════\nتحقق من مفتاح TwelveData وأعد المحاولة.",
         { chat_id: chatId, message_id: statusMsgId,
           reply_markup: { inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]] } },
       );
@@ -1040,7 +1127,66 @@ bot.on("callback_query", async (q) => {
       reply_markup: {
         inline_keyboard: [
           [{ text: "🔄 مسح مجدداً",     callback_data: "scan_all"       }],
+          [{ text: "🔥 صفقة VIP",        callback_data: "vip_trade"      }],
           [{ text: "📊 تحليل زوج فردي", callback_data: "start_analysis" }],
+          [{ text: "🏠 الرئيسية",        callback_data: "home"           }],
+        ],
+      },
+    });
+  }
+
+  // ── VIP Trade
+  if (data === "vip_trade") {
+    if (isNewsTime()) {
+      return bot.sendMessage(
+        chatId,
+        "📰 تنبيه — وقت أخبار\n═══════════════════\nيُحتمل وجود خبر اقتصادي مؤثر الآن.\n⚠️ تجنب الدخول خلال فترات الأخبار.",
+        { reply_markup: { inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]] } },
+      );
+    }
+
+    const statusMsg = await bot.sendMessage(
+      chatId,
+      `🔥 جاري البحث عن صفقة VIP...\n⏳ 0 / ${TOP_10_PAIRS.length} — يرجى الانتظار`,
+    );
+    const statusMsgId = statusMsg.message_id;
+
+    log("INFO", "vip_trade_started", { chatId });
+
+    let best;
+    try {
+      best = await scanVIP(chatId, statusMsgId);
+    } catch (err) {
+      log("ERROR", "vip_trade_failed", { chatId, error: err.message });
+      return bot.editMessageText(
+        "❌ خطأ أثناء البحث عن صفقة VIP\n═══════════════════\nتحقق من مفتاح TwelveData وأعد المحاولة.",
+        { chat_id: chatId, message_id: statusMsgId,
+          reply_markup: { inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]] } },
+      );
+    }
+
+    log("INFO", "vip_trade_done", { chatId, found: !!best, asset: best?.asset });
+
+    const vipText = best
+      ? formatVIPResult(best.asset, best.result)
+      : [
+          "🔥 صفقة VIP",
+          "═══════════════════",
+          "🚫 لا توجد صفقة VIP نظيفة الآن",
+          "",
+          "لم يُعثر على إعداد Grade A أو B نظيف.",
+          "جرّب مجدداً بعد 10–15 دقيقة.",
+          "═══════════════════",
+          "🎯 Pocket Option — سوق حقيقي",
+        ].join("\n");
+
+    return bot.editMessageText(vipText, {
+      chat_id: chatId,
+      message_id: statusMsgId,
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "🔥 إعادة البحث",    callback_data: "vip_trade"      }],
+          [{ text: "🔍 مسح الأزواج",    callback_data: "scan_all"       }],
           [{ text: "🏠 الرئيسية",        callback_data: "home"           }],
         ],
       },
@@ -1052,18 +1198,22 @@ bot.on("callback_query", async (q) => {
     const asset = data.replace("asset_", "");
 
     if (!ALLOWED_ASSETS.includes(asset)) {
-      return bot.sendMessage(chatId, "⚠️ هذا الزوج غير مدعوم.", {
-        reply_markup: {
-          inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]],
+      return bot.sendMessage(
+        chatId,
+        "⚠️ الزوج غير مدعوم\n═══════════════════\nهذا الزوج غير متاح في قاعدة البيانات.",
+        {
+          reply_markup: {
+            inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]],
+          },
         },
-      });
+      );
     }
 
     // News filter
     if (isNewsTime()) {
       return bot.sendMessage(
         chatId,
-        "📰 فلتر الأخبار: يُحتمل وجود خبر اقتصادي مؤثر الآن.\n⚠️ NO TRADE — انتظر 10 دقائق وأعد المحاولة.",
+        "📰 تنبيه — وقت أخبار\n═══════════════════\nيُحتمل وجود خبر اقتصادي مؤثر الآن.\n⚠️ NO TRADE — انتظر 10 دقائق وأعد المحاولة.",
         {
           reply_markup: {
             inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]],
@@ -1076,7 +1226,7 @@ bot.on("callback_query", async (q) => {
     if (isCandleEdge()) {
       return bot.sendMessage(
         chatId,
-        "⏱️ أنت في بداية أو نهاية الشمعة. انتظر دقيقتين وأعد التحليل للحصول على إشارة أدق.",
+        "⏱️ تنبيه — حافة الشمعة\n═══════════════════\nأنت في بداية أو نهاية الشمعة الحالية.\nانتظر دقيقتين وأعد التحليل للحصول على إشارة أدق.",
         {
           reply_markup: {
             inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]],
@@ -1088,7 +1238,7 @@ bot.on("callback_query", async (q) => {
     sessions[chatId].asset = asset;
     log("INFO", "analysis_requested", { chatId, asset });
 
-    await bot.sendMessage(chatId, `⌛ جاري تحليل ${asset}...`);
+    await bot.sendMessage(chatId, `⌛ جاري تحليل ${asset}...\n⏳ يرجى الانتظار`);
 
     let result;
     try {
@@ -1097,7 +1247,7 @@ bot.on("callback_query", async (q) => {
       log("ERROR", "analysis_failed", { chatId, asset, error: err.message });
       return bot.sendMessage(
         chatId,
-        "❌ خطأ في جلب بيانات السوق. تحقق من مفتاح TwelveData أو حاول لاحقاً.",
+        "❌ خطأ في التحليل\n═══════════════════\nتعذّر جلب بيانات السوق.\nتحقق من مفتاح TwelveData أو حاول لاحقاً.",
         {
           reply_markup: {
             inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]],
@@ -1116,9 +1266,10 @@ bot.on("callback_query", async (q) => {
 
     const sessionLine = (!result.noTrade && result.sessionWarning)
       ? `\n${result.sessionWarning}` : "";
+    const SEP = "═══════════════════";
     const replyText = result.noTrade
-      ? `📊 نتيجة التحليل — ${asset}\n\nالنتيجة: ${result.signal}\n\n📌 السبب: ${result.reason}\n\n━━━━━━━━━━━━━━━━━━\n🎯 المنصة: Pocket Option — سوق حقيقي\n⚠️ القرار النهائي عليك أنت.`
-      : `📊 نتيجة التحليل — ${asset}\n\nالنتيجة: ${result.signal}\n\n🎯 نسبة الثقة: ${result.confidence}%\n🏅 التقييم: ${result.grade}\n⏱️ مدة الصفقة المقترحة: ${result.expiry}${sessionLine}\n\n✅ الأسباب: ${result.reason}\n\n${buildChecklist(result)}\n\n━━━━━━━━━━━━━━━━━━\n🎯 المنصة: Pocket Option — سوق حقيقي\n⚠️ القرار النهائي عليك أنت. لا تعتمد على إشارة واحدة.`;
+      ? `📊 تحليل — ${asset}\n${SEP}\nالنتيجة: ⚪ لا توجد صفقة\n\n📌 السبب:\n${result.reason}\n\n${SEP}\n🎯 Pocket Option — سوق حقيقي\n⚠️ القرار النهائي عليك أنت.`
+      : `📊 تحليل — ${asset}\n${SEP}\nالنتيجة: ${result.signal}\n\n🎯 الثقة: ${result.confidence}%   🏅 التقييم: ${result.grade}\n⏱️ مدة الصفقة: ${result.expiry}${sessionLine}\n\n📌 الأسباب:\n${result.reason}\n\n${buildChecklist(result)}\n\n${SEP}\n🎯 Pocket Option — سوق حقيقي\n⚠️ القرار النهائي عليك أنت.`;
 
     return bot.sendMessage(chatId, replyText, {
       reply_markup: {
