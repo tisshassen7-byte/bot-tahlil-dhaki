@@ -73,7 +73,7 @@ const HIGH_IMPACT_UTC_RANGES = [
   { h: 18, m: 0, endH: 18, endM: 5 }, // إغلاق لندن
 ];
 
-const MIN_CONFIDENCE = 65; // حد أدنى للثقة — مرفوع لتقليل الإشارات الضعيفة
+const MIN_CONFIDENCE = 57; // حد أدنى للثقة
 const ANALYSIS_INTERVAL = "5min"; // إطار زمني ثابت للتحليل
 
 // ─── Logging ──────────────────────────────────────────────────────────────────
@@ -107,19 +107,6 @@ function isNewsTime() {
 function isCandleEdge() {
   const m = new Date().getUTCMinutes();
   return m <= 1 || m >= 58;
-}
-
-// ─── Quiet Session Filter (ناعم — لا يحجب الإشارات) ──────────────────────────
-// جلسات منخفضة السيولة بتوقيت UTC:
-//   00:00–06:59 → فجوة آسيوية (انتشار واسع على الأزواج الأوروبية)
-//   21:00–23:59 → ما بعد إغلاق نيويورك (حجم خفيف جداً)
-function quietSession() {
-  const h = new Date().getUTCHours();
-  const isQuiet = h < 7 || h >= 21;
-  const warning = isQuiet
-    ? "⚠️ جلسة هادئة — سيولة منخفضة، الإشارة أقل موثوقية"
-    : null;
-  return { isQuiet, warning };
 }
 
 // ─── Technical Indicators ─────────────────────────────────────────────────────
@@ -171,47 +158,6 @@ function sma(values, period) {
   return values.slice(-period).reduce((a, b) => a + b, 0) / period;
 }
 
-// ─── Synthetic Higher-Timeframe (no extra API call) ──────────────────────────
-// يجمع كل groupSize شموع 5-دقائق في شمعة واحدة محاكاة للإطار الأعلى (15 دقيقة)
-function syntheticHTF(candles, groupSize = 3) {
-  const grouped = [];
-  for (let i = 0; i + groupSize <= candles.length; i += groupSize) {
-    const g = candles.slice(i, i + groupSize);
-    grouped.push({
-      open:  g[0].open,
-      high:  Math.max(...g.map((c) => c.high)),
-      low:   Math.min(...g.map((c) => c.low)),
-      close: g[g.length - 1].close,
-    });
-  }
-  return grouped;
-}
-
-// يحدد اتجاه الإطار الأعلى باستخدام EMA9 و EMA21 على الشموع المحاكاة
-function htfBias(candles5min) {
-  const htf = syntheticHTF(candles5min, 3); // 5min → ~15min
-  if (htf.length < 22) return { htfUp: false, htfDown: false, htfClear: false };
-  const htfCloses = htf.map((c) => c.close);
-  const htfE9  = ema(htfCloses, 9);
-  const htfE21 = ema(htfCloses, 21);
-  if (!htfE9 || !htfE21) return { htfUp: false, htfDown: false, htfClear: false };
-  const htfLast = htfCloses[htfCloses.length - 1];
-  const htfUp   = htfE9 > htfE21 && htfLast > htfE21;
-  const htfDown = htfE9 < htfE21 && htfLast < htfE21;
-  return { htfUp, htfDown, htfClear: htfUp || htfDown };
-}
-
-// ─── Suggested Expiry (توصية مدة الصفقة) ─────────────────────────────────────
-// يعطي توصية عربية بناءً على التذبذب وقوة الترند
-function suggestExpiry(volRatio, isStrongTrend) {
-  // سوق هادئ جداً: السعر يتحرك ببطء — دقيقة واحدة غير كافية
-  if (volRatio < 0.0002) return "5 دقائق";
-  // تذبذب مرتفع جداً: السوق صاخب — تقليل وقت التعرض
-  if (volRatio > 0.002)  return "دقيقة واحدة";
-  // تذبذب معتدل: يُفضَّل 5 دقائق مع ترند قوي، دقيقة مع ترند معتدل
-  return isStrongTrend ? "5 دقائق" : "دقيقة واحدة";
-}
-
 // ─── Candle Quality ───────────────────────────────────────────────────────────
 function candleQuality(candles) {
   const c = candles[candles.length - 1];
@@ -219,70 +165,9 @@ function candleQuality(candles) {
   const body = Math.abs(c.close - c.open);
   const range = c.high - c.low || 0.000001;
   const bodyRatio = body / range;
-  const bullish = c.close > c.open && c.close > prev.close && bodyRatio >= 0.55; // مرفوع: شمعة صاعدة أقوى
-  const bearish = c.close < c.open && c.close < prev.close && bodyRatio >= 0.55; // مرفوع: شمعة هابطة أقوى
+  const bullish = c.close > c.open && c.close > prev.close && bodyRatio >= 0.5;
+  const bearish = c.close < c.open && c.close < prev.close && bodyRatio >= 0.5;
   return { bullish, bearish, bodyRatio };
-}
-
-// ─── Candle Pattern Detector (تأكيد فقط — لا تُطلق إشارة منفردة) ─────────────
-function candlePatterns(candles) {
-  if (candles.length < 2) return [];
-  const c    = candles[candles.length - 1];
-  const prev = candles[candles.length - 2];
-
-  const cBody      = Math.abs(c.close - c.open);
-  const cRange     = c.high - c.low || 0.000001;
-  const cBodyTop   = Math.max(c.open, c.close);
-  const cBodyBot   = Math.min(c.open, c.close);
-  const cUpperWick = c.high  - cBodyTop;
-  const cLowerWick = cBodyBot - c.low;
-
-  const prevBodyTop = Math.max(prev.open, prev.close);
-  const prevBodyBot = Math.min(prev.open, prev.close);
-
-  const found = [];
-
-  // ── ابتلاع صاعد: شمعة صاعدة تبتلع جسم الشمعة الهابطة السابقة
-  if (
-    c.close > c.open &&
-    prev.close < prev.open &&
-    cBodyBot <= prevBodyBot &&
-    cBodyTop >= prevBodyTop &&
-    cBody > 0.5 * cRange       // جسم قوي
-  ) {
-    found.push({ name: "ابتلاع صاعد", bullish: true, score: 10 });
-  }
-
-  // ── ابتلاع هابط: شمعة هابطة تبتلع جسم الشمعة الصاعدة السابقة
-  if (
-    c.close < c.open &&
-    prev.close > prev.open &&
-    cBodyTop >= prevBodyTop &&
-    cBodyBot <= prevBodyBot &&
-    cBody > 0.5 * cRange
-  ) {
-    found.push({ name: "ابتلاع هابط", bullish: false, score: 10 });
-  }
-
-  // ── مطرقة / باين بار صاعد: ذيل سفلي طويل، إغلاق في النصف العلوي
-  if (
-    cLowerWick >= 2 * Math.max(cBody, 0.000001) &&
-    cLowerWick > cUpperWick * 2 &&
-    c.close > (c.high + c.low) / 2
-  ) {
-    found.push({ name: "مطرقة / باين بار صاعد", bullish: true, score: 8 });
-  }
-
-  // ── نجمة ساقطة / باين بار هابط: ذيل علوي طويل، إغلاق في النصف السفلي
-  if (
-    cUpperWick >= 2 * Math.max(cBody, 0.000001) &&
-    cUpperWick > cLowerWick * 2 &&
-    c.close < (c.high + c.low) / 2
-  ) {
-    found.push({ name: "نجمة ساقطة / باين بار هابط", bullish: false, score: 8 });
-  }
-
-  return found;
 }
 
 // ─── Multi-candle Trend Confirmation ─────────────────────────────────────────
@@ -307,54 +192,10 @@ function supportResistance(closes, last) {
   return { high, low, nearResistance, nearSupport };
 }
 
-// ─── S/R Zone Detection (مناطق دعم ومقاومة قوية بالقمم والقيعان) ─────────────
-// يحدد مناطق ذات لمسات متعددة ويفحص مدى قرب السعر منها
-function srZones(candles) {
-  const slice = candles.slice(-70); // آخر 70 شمعة
-  const last  = slice[slice.length - 1].close;
-
-  // جمع القمم والقيعان المحورية (pivot highs / pivot lows)
-  const swingHighs = [];
-  const swingLows  = [];
-  for (let i = 1; i < slice.length - 1; i++) {
-    if (slice[i].high > slice[i - 1].high && slice[i].high > slice[i + 1].high) {
-      swingHighs.push(slice[i].high);
-    }
-    if (slice[i].low < slice[i - 1].low && slice[i].low < slice[i + 1].low) {
-      swingLows.push(slice[i].low);
-    }
-  }
-
-  // تجميع النقاط المتقاربة في مناطق (zone clustering)
-  const CLUSTER_PCT = 0.0015; // 0.15% هامش التجميع
-  function cluster(points) {
-    const zones = [];
-    for (const p of points) {
-      const z = zones.find((z) => Math.abs(z.price - p) / p < CLUSTER_PCT);
-      if (z) { z.price = (z.price + p) / 2; z.touches++; }
-      else    { zones.push({ price: p, touches: 1 }); }
-    }
-    return zones.filter((z) => z.touches >= 2); // منطقة قوية: لمستان أو أكثر
-  }
-
-  const PROX = 0.002; // 0.2% قرب السعر من المنطقة
-  const resistZones = cluster(swingHighs).filter((z) => z.price > last);
-  const supportZones = cluster(swingLows).filter((z) => z.price < last);
-
-  const nearStrongResistance = resistZones.some(
-    (z) => (z.price - last) / last < PROX,
-  );
-  const nearStrongSupport = supportZones.some(
-    (z) => (last - z.price) / last < PROX,
-  );
-
-  return { nearStrongResistance, nearStrongSupport };
-}
-
 // ─── Grade ────────────────────────────────────────────────────────────────────
 function grade(score) {
   if (score >= 90) return "A";
-  if (score >= 82) return "B"; // رُفع من 78 — Grade B يتطلب إعداداً أنظف
+  if (score >= 78) return "B";
   return "C";
 }
 
@@ -457,7 +298,6 @@ async function analyze(symbol) {
   const { nearResistance, nearSupport } = supportResistance(closes, last);
   const candle = candleQuality(candles);
   const trendConf = trendConfirmation(candles);
-  const srCheck = srZones(candles);
 
   // ── Hard filters (خطر حقيقي فقط)
   if (tooDead)
@@ -465,9 +305,6 @@ async function analyze(symbol) {
   if (tooWild) return noTrade("🔴 تذبذب شديد: الخطر عالٍ جداً");
   if (!anyUp && !anyDown)
     return noTrade("⚪ لا يوجد اتجاه: EMAs متشابكة في جميع الاتجاهات");
-  // EMAs متقاربة جداً بدون ترند قوي = سوق فوضوي
-  if (emaSep < 0.00005 && !strongUp && !strongDown)
-    return noTrade("⚪ EMAs متشابكة: لا اتجاه واضح — سوق فوضوي");
 
   // ── Scoring
   let buyScore = 0,
@@ -491,9 +328,15 @@ async function analyze(symbol) {
     sellReasons.push("ترند هابط معتدل (EMA 9<21<50)");
   }
 
+  // طرح بسيط عند EMAs قريبة جداً (لا حجب)
+  if (emaSep < 0.00005) {
+    buyScore  -= 8;
+    sellScore -= 8;
+  }
+
   // RSI — نطاق واسع في الترند
-  const rsiBuyOk  = anyUp   ? (r >= 38 && r <= 85) : (r >= 45 && r <= 70);
-  const rsiSellOk = anyDown ? (r >= 15 && r <= 62) : (r >= 30 && r <= 55);
+  const rsiBuyOk  = anyUp   ? (r >= 38 && r <= 90) : (r >= 45 && r <= 72);
+  const rsiSellOk = anyDown ? (r >= 10 && r <= 62) : (r >= 28 && r <= 55);
   if (rsiBuyOk) {
     buyScore += 18;
     buyReasons.push(`RSI=${r.toFixed(0)} مناسب شراء`);
@@ -502,17 +345,9 @@ async function analyze(symbol) {
     sellScore += 18;
     sellReasons.push(`RSI=${r.toFixed(0)} مناسب بيع`);
   }
-  // عقوبة قوية عند تشبع شرائي/بيعي حاد بدون ترند قوي
-  if (r > 80 && !strongUp)   buyScore  -= 20;
-  if (r < 20 && !strongDown) sellScore -= 20;
-  if (r > 90 && !anyUp)      buyScore  -= 15;
-  if (r < 10 && !anyDown)    sellScore -= 15;
-
-  // عقوبة شمعة ضعيفة (doji / تردد): إشارة متضاربة
-  if (candle.bodyRatio < 0.35) {
-    buyScore  -= 14;
-    sellScore -= 14;
-  }
+  // عقوبة عند تشبع حاد جداً فقط في غياب الترند
+  if (r > 90 && !anyUp)   buyScore  -= 15;
+  if (r < 10 && !anyDown) sellScore -= 15;
 
   // جودة الشمعة الأخيرة
   if (candle.bullish) {
@@ -528,28 +363,14 @@ async function analyze(symbol) {
   if (anyUp   && rsiBuyOk  && candle.bullish) { buyScore  += 7; buyReasons.push("زخم متوافق"); }
   if (anyDown && rsiSellOk && candle.bearish) { sellScore += 7; sellReasons.push("زخم متوافق"); }
 
-  // تأكيد متعدد الشموع — 4/5 للمكافأة الكاملة، 3/5 للمكافأة الجزئية فقط
-  if (trendConf.upCount >= 4) {
+  // تأكيد متعدد الشموع (3 من 5)
+  if (trendConf.upCount >= 3) {
     buyScore += 12;
     buyReasons.push(`${trendConf.upCount}/5 شموع صاعدة`);
-  } else if (trendConf.upCount === 3) {
-    buyScore += 5;
-    buyReasons.push(`${trendConf.upCount}/5 شموع صاعدة`);
   }
-  if (trendConf.downCount >= 4) {
+  if (trendConf.downCount >= 3) {
     sellScore += 12;
     sellReasons.push(`${trendConf.downCount}/5 شموع هابطة`);
-  } else if (trendConf.downCount === 3) {
-    sellScore += 5;
-    sellReasons.push(`${trendConf.downCount}/5 شموع هابطة`);
-  }
-
-  // أنماط الشموع — تأكيد فقط، لا تُطلق إشارة منفردة
-  // يتم تطبيقها قبل الصفر العكسي للترند، لذا لن تنقذ أي إشارة عكسية
-  const patterns = candlePatterns(candles);
-  for (const p of patterns) {
-    if (p.bullish) { buyScore  += p.score; buyReasons.push(p.name);  }
-    else            { sellScore += p.score; sellReasons.push(p.name); }
   }
 
   // دعم ومقاومة — عقوبة مخففة وفقط في غياب أي ترند
@@ -572,12 +393,12 @@ async function analyze(symbol) {
     sellScore += 8;
   }
 
-  // ── صفر مطلق ضد الترند — القوي والمعتدل على حدٍّ سواء
+  // ── صفر مطلق ضد الترند القوي فقط
   if (strongDown) buyScore = 0;
   if (strongUp)   sellScore = 0;
-  // الترند المعتدل: إلغاء كامل للإشارة العكسية (بدلاً من الحد السابق 10)
-  if (modDown) buyScore  = 0;
-  if (modUp)   sellScore = 0;
+  // في الترند المعتدل: اخفض النقاط العكسية بدلاً من صفرها
+  if (modDown && buyScore  > 10) buyScore  = 10;
+  if (modUp   && sellScore > 10) sellScore = 10;
 
   // ── Final Decision
   const dominant = buyScore > sellScore ? "BUY" : "SELL";
@@ -589,80 +410,15 @@ async function analyze(symbol) {
     return noTrade(
       `⚪ الثقة غير كافية (${dominantScore}%) — الجودة أهم من الكمية`,
     );
-  // فجوة أوسع: فرق أقل من 18 نقطة = إشارة غير حاسمة
-  if (dominantScore - opposite < 18)
-    return noTrade("⚪ إشارة غير حاسمة: لا أفضلية واضحة بين BUY و SELL");
+  if (dominantScore - opposite < 6)
+    return noTrade("⚪ إشارة متعارضة: لا أفضلية واضحة بين BUY و SELL");
 
-  // الترند المعتدل يُسقَّف عند 88% — Grade A محجوزة للترند القوي فقط
-  const isStrongTrend = dominant === "BUY" ? strongUp : strongDown;
-  const rawConfidence = isStrongTrend
-    ? Math.min(93, dominantScore)
-    : Math.min(88, dominantScore);
-
-  // ── فلتر الإطار الزمني الأعلى (خفيف — بدون طلبات API إضافية)
-  // يُشتق اتجاه ~15 دقيقة من تجميع شموع 5 دقائق الموجودة
-  const { htfUp, htfDown, htfClear } = htfBias(candles);
-  const htfConflict  = (dominant === "BUY"  && htfDown)
-                     || (dominant === "SELL" && htfUp);
-  const htfConfirms  = (dominant === "BUY"  && htfUp)
-                     || (dominant === "SELL" && htfDown);
-
-  let confidence = rawConfidence;
-  if (htfConflict) {
-    // تعارض مع الإطار الأعلى: خصم خفيف 10 نقاط
-    confidence = rawConfidence - 10;
-    if (confidence < MIN_CONFIDENCE)
-      return noTrade("⚪ تعارض مع اتجاه ~15 دقيقة — إشارة ضعيفة");
-  } else if (htfConfirms) {
-    // توافق مع الإطار الأعلى: مكافأة خفيفة 4 نقاط
-    const ceil = isStrongTrend ? 93 : 88;
-    confidence = Math.min(ceil, rawConfidence + 4);
-  }
-  // إذا كان الإطار الأعلى غير واضح (htfClear=false): لا تغيير
-
-  // ── فلتر الجلسة الهادئة (ناعم — يخفض الثقة فقط، لا يحجب الإشارة)
-  const { isQuiet, warning: sessionWarning } = quietSession();
-  const finalConfidence = isQuiet
-    ? Math.max(0, confidence - 7)
-    : confidence;
-
-  // إذا أدى الخصم إلى انخفاض عن الحد الأدنى، أعد التحقق ولكن لا تحجب تلقائياً
-  if (finalConfidence < MIN_CONFIDENCE) {
-    return noTrade(
-      sessionWarning
-        ? `⚪ الثقة غير كافية بعد خصم الجلسة الهادئة (${finalConfidence}%)`
-        : `⚪ الثقة غير كافية (${finalConfidence}%) — الجودة أهم من الكمية`,
-    );
-  }
-
-  // ── مناطق الدعم والمقاومة القوية (ناعم — تحذير + خصم خفيف فقط)
-  let zoneConfidence = finalConfidence;
-  if (dominant === "BUY" && srCheck.nearStrongResistance) {
-    reasons.push("⚠️ قريب من مقاومة قوية — توخَّ الحذر");
-    zoneConfidence = Math.max(0, finalConfidence - 5);
-  } else if (dominant === "SELL" && srCheck.nearStrongSupport) {
-    reasons.push("⚠️ قريب من دعم قوي — توخَّ الحذر");
-    zoneConfidence = Math.max(0, finalConfidence - 5);
-  }
-  // إذا أسقط الخصم الإشارة، أعد رفضها بتوضيح السبب
-  if (zoneConfidence < MIN_CONFIDENCE) {
-    return noTrade(`⚪ الثقة غير كافية بعد احتساب المنطقة (${zoneConfidence}%)`);
-  }
-
+  const confidence = Math.min(93, dominantScore);
   return {
     signal: dominant === "BUY" ? "🟢 BUY" : "🔴 SELL",
-    confidence: zoneConfidence,
-    grade: grade(zoneConfidence),
+    confidence,
+    grade: grade(confidence),
     reason: reasons.join(" ✦ "),
-    expiry: suggestExpiry(volRatio, isStrongTrend),
-    sessionWarning,
-    meta: {
-      trendStrong: dominant === "BUY" ? strongUp : strongDown,
-      trendUp:     dominant === "BUY",
-      rsi:         r,
-      candleDir:   dominant === "BUY" ? candle.bullish : candle.bearish,
-      nearZone:    dominant === "BUY" ? srCheck.nearStrongResistance : srCheck.nearStrongSupport,
-    },
     noTrade: false,
   };
 }
@@ -677,42 +433,6 @@ function noTrade(reason) {
   };
 }
 
-// ─── Signal Checklist (بصري فقط — لا يؤثر على الإشارات) ─────────────────────
-function buildChecklist(result) {
-  const isBuy = result.signal.includes("BUY");
-  const m = result.meta;
-
-  const trendIcon = m.trendStrong ? "✅" : "⚠️";
-  const trendText = m.trendStrong
-    ? (isBuy ? "ترند صاعد قوي"    : "ترند هابط قوي")
-    : (isBuy ? "ترند صاعد معتدل" : "ترند هابط معتدل");
-
-  const rsiOk   = isBuy ? (m.rsi >= 38 && m.rsi <= 85) : (m.rsi >= 15 && m.rsi <= 62);
-  const rsiIcon = rsiOk ? "✅" : "⚠️";
-
-  const candleIcon = m.candleDir ? "✅" : "⚠️";
-  const candleText = m.candleDir
-    ? (isBuy ? "شمعة صاعدة مؤكدة"  : "شمعة هابطة مؤكدة")
-    : (isBuy ? "شمعة غير مؤكدة"   : "شمعة غير مؤكدة");
-
-  const zoneIcon = m.nearZone ? "⚠️" : "✅";
-  const zoneText = m.nearZone
-    ? (isBuy ? "قرب مقاومة قوية" : "قرب دعم قوي")
-    : "بعيد عن مناطق خطر";
-
-  const sessionIcon = result.sessionWarning ? "⚠️" : "✅";
-  const sessionText = result.sessionWarning ? "جلسة هادئة" : "جلسة نشطة";
-
-  return [
-    `📋 ملخص سريع:`,
-    `${trendIcon} الترند: ${trendText}`,
-    `${rsiIcon} RSI: ${m.rsi.toFixed(0)}`,
-    `${candleIcon} الشمعة: ${candleText}`,
-    `${zoneIcon} المنطقة: ${zoneText}`,
-    `${sessionIcon} الجلسة: ${sessionText}`,
-  ].join("\n");
-}
-
 // ─── Welcome Image ────────────────────────────────────────────────────────────
 // صورة ترحيبية بأسلوب سايبر-تداول — استبدلها برابط صورتك الخاصة إن أردت
 const WELCOME_IMAGE_URL =
@@ -722,10 +442,10 @@ const WELCOME_IMAGE_URL =
 function sendWelcome(chatId) {
   const caption = [
     "📡 *رادار السوق*",
-    "═══════════════════",
+    "━━━━━━━━━━━━━━━━━━",
     "منصة تحليل الفوركس الاحترافية",
     "سوق حقيقي · توقيت فرنسا · خاص بك",
-    "═══════════════════",
+    "━━━━━━━━━━━━━━━━━━",
     "⚠️ للتحليل فقط — القرار النهائي عليك أنت.",
   ].join("\n");
 
@@ -753,19 +473,12 @@ function sendWelcome(chatId) {
 function mainMenu(chatId) {
   return bot.sendMessage(
     chatId,
-    [
-      "📡 *رادار السوق*",
-      "═══════════════════",
-      "تحليل فوركس احترافي · 24/7",
-      "═══════════════════",
-      "اختر الخدمة:",
-    ].join("\n"),
+    "📡 *رادار السوق* — القائمة الرئيسية",
     {
       parse_mode: "Markdown",
       reply_markup: {
         inline_keyboard: [
           [{ text: "🔍 مسح أقوى 10 أزواج", callback_data: "scan_all"       }],
-          [{ text: "🔥 صفقة VIP",           callback_data: "vip_trade"      }],
           [{ text: "📊 تحليل زوج فردي",    callback_data: "start_analysis" }],
         ],
       },
@@ -784,14 +497,9 @@ function assetMenu(chatId) {
     );
   }
   rows.push([{ text: "🏠 الرئيسية", callback_data: "home" }]);
-  return bot.sendMessage(
-    chatId,
-    "📊 *تحليل زوج فردي*\n═══════════════════\nاختر الزوج من السوق الحقيقي:",
-    {
-      parse_mode: "Markdown",
-      reply_markup: { inline_keyboard: rows },
-    },
-  );
+  return bot.sendMessage(chatId, "💱 اختر الزوج (سوق حقيقي فقط):", {
+    reply_markup: { inline_keyboard: rows },
+  });
 }
 
 
@@ -807,15 +515,14 @@ async function scanAllPairs(chatId, statusMsgId, pairs = TOP_10_PAIRS) {
     // تحديث رسالة التقدم كل 4 أزواج
     if (i % 4 === 0) {
       await bot.editMessageText(
-        `🔍 جاري مسح الأزواج...\n⏳ ${i} / ${total} — يرجى الانتظار`,
+        `🔍 جاري مسح الأزواج... ${i}/${total}\n⏳ يرجى الانتظار`,
         { chat_id: chatId, message_id: statusMsgId },
       ).catch(() => {});
     }
 
     try {
       const result = await analyze(asset);
-      // Grade C مُستبعدة من نتائج المسح — الجودة فقط (A و B)
-      if (!result.noTrade && result.grade !== "C") {
+      if (!result.noTrade) {
         const entry = { asset, signal: result.signal, confidence: result.confidence, grade: result.grade, reason: result.reason };
         if (result.signal.includes("BUY"))  buys.push(entry);
         else                                 sells.push(entry);
@@ -829,79 +536,6 @@ async function scanAllPairs(chatId, statusMsgId, pairs = TOP_10_PAIRS) {
   }
 
   return { buys, sells };
-}
-
-// ─── VIP Trade Scanner ────────────────────────────────────────────────────────
-// يبحث عن أفضل صفقة واحدة بجودة ذهبية (Grade A أو B نظيف فقط)
-async function scanVIP(chatId, statusMsgId) {
-  const candidates = [];
-  const total = TOP_10_PAIRS.length;
-
-  for (let i = 0; i < total; i++) {
-    const asset = TOP_10_PAIRS[i];
-
-    if (i % 3 === 0) {
-      await bot.editMessageText(
-        `🔥 جاري البحث عن صفقة VIP...\n⏳ ${i} / ${total} — يرجى الانتظار`,
-        { chat_id: chatId, message_id: statusMsgId },
-      ).catch(() => {});
-    }
-
-    try {
-      const result = await analyze(asset);
-      if (!result.noTrade && result.grade !== "C") {
-        const isGradeA = result.grade === "A";
-        // Grade B مقبول فقط إذا كان نظيفاً: بعيد عن مناطق خطر وجلسة نشطة
-        const isCleanB = result.grade === "B"
-          && !result.meta.nearZone
-          && !result.sessionWarning;
-
-        if (isGradeA || isCleanB) {
-          // يُفضَّل Grade A بإضافة نقاط وهمية للترتيب
-          const vipScore = isGradeA ? result.confidence + 10 : result.confidence;
-          candidates.push({ asset, result, vipScore });
-        }
-      }
-    } catch {
-      // تجاهل أخطاء الأزواج الفردية
-    }
-
-    if (i < total - 1) await new Promise((r) => setTimeout(r, 1200));
-  }
-
-  if (candidates.length === 0) return null;
-  candidates.sort((a, b) => b.vipScore - a.vipScore);
-  return candidates[0];
-}
-
-// ─── VIP Trade Formatter ──────────────────────────────────────────────────────
-function formatVIPResult(asset, result) {
-  const SEP   = "═══════════════════";
-  const entry = suggestedEntry();
-  const ts    = parisTimeStr();
-
-  return [
-    `🔥 صفقة VIP`,
-    SEP,
-    `📅 ${ts} (فرنسا)`,
-    ``,
-    `💱 الزوج: ${asset}`,
-    `الاتجاه: ${result.signal}`,
-    ``,
-    `🎯 الثقة: ${result.confidence}%   🏅 التقييم: ${result.grade}`,
-    `⏱️ مدة الصفقة: ${result.expiry}`,
-    `⏰ وقت الدخول: ${entry.label}`,
-    ...(result.sessionWarning ? [result.sessionWarning] : []),
-    ``,
-    `📌 الأسباب:`,
-    result.reason,
-    ``,
-    buildChecklist(result),
-    ``,
-    SEP,
-    `💎 صفقة واحدة · جودة ذهبية`,
-    `⚠️ القرار النهائي عليك أنت.`,
-  ].join("\n");
 }
 
 // ─── Suggested Entry Time (5min candle logic) ─────────────────────────────────
@@ -925,10 +559,9 @@ function suggestedEntry() {
 }
 
 function formatScanResults(buys, sells) {
-  const SEP   = "═══════════════════";
-  const ts    = parisTimeStr();
+  const ts = parisTimeStr();
   const entry = suggestedEntry();
-  const lines = [`📡 رادار السوق — ${ts} (فرنسا)`, SEP];
+  const lines = [`🔍 نتائج المسح — ${ts} (فرنسا)`, `━━━━━━━━━━━━━━━━━━`];
 
   if (buys.length === 0 && sells.length === 0) {
     lines.push("⚪ لا توجد إشارات واضحة الآن على أي زوج.");
@@ -940,7 +573,7 @@ function formatScanResults(buys, sells) {
       buys
         .sort((a, b) => b.confidence - a.confidence)
         .forEach((e) =>
-          lines.push(`  ◈ ${e.asset}   ${e.confidence}%  [${e.grade}]`),
+          lines.push(`  • ${e.asset}  ${e.confidence}% [${e.grade}] — دخول: ${entry.label}`),
         );
     }
     if (sells.length > 0) {
@@ -948,42 +581,41 @@ function formatScanResults(buys, sells) {
       sells
         .sort((a, b) => b.confidence - a.confidence)
         .forEach((e) =>
-          lines.push(`  ◈ ${e.asset}   ${e.confidence}%  [${e.grade}]`),
+          lines.push(`  • ${e.asset}  ${e.confidence}% [${e.grade}] — دخول: ${entry.label}`),
         );
     }
-    lines.push(`\n📊 ${buys.length + sells.length} إشارة من ${ALLOWED_ASSETS.length} زوج`);
+    lines.push(`\n📊 المجموع: ${buys.length + sells.length} إشارة من ${ALLOWED_ASSETS.length} زوج`);
   }
 
-  lines.push(`\n${SEP}`);
-  lines.push(`🎯 Pocket Option — سوق حقيقي`);
+  lines.push(`\n━━━━━━━━━━━━━━━━━━`);
+  lines.push(`🎯 المنصة: Pocket Option — سوق حقيقي`);
   lines.push(`⚠️ القرار النهائي عليك أنت.`);
   return lines.join("\n");
 }
 
 // ─── Top 10 Scan Formatter (future-entry only — hides "now" signals) ──────────
 function formatTop10Results(buys, sells) {
-  const SEP   = "═══════════════════";
   const ts    = parisTimeStr();
   const entry = suggestedEntry();
 
   // إذا كان وقت الدخول "الآن"، لا تعرض أي إشارات
   if (entry.waitMins === 0) {
     return [
-      `📡 رادار السوق — ${ts} (فرنسا)`,
-      SEP,
+      `🔍 رادار السوق — ${ts} (فرنسا)`,
+      `━━━━━━━━━━━━━━━━━━`,
       `⏳ وقت الدخول الحالي: الآن`,
       ``,
       `لا تُعرض إشارات فورية في المسح التلقائي.`,
       `انتظر فتح الشمعة التالية وأعد المسح.`,
       ``,
-      SEP,
+      `━━━━━━━━━━━━━━━━━━`,
       `🎯 Pocket Option — سوق حقيقي`,
     ].join("\n");
   }
 
   const lines = [
-    `📡 رادار السوق — ${ts} (فرنسا)`,
-    SEP,
+    `🔍 رادار السوق — ${ts} (فرنسا)`,
+    `━━━━━━━━━━━━━━━━━━`,
     `⏰ وقت الدخول: ${entry.label}`,
     ``,
   ];
@@ -996,20 +628,20 @@ function formatTop10Results(buys, sells) {
       lines.push(`🟢 BUY (${buys.length}):`);
       buys
         .sort((a, b) => b.confidence - a.confidence)
-        .forEach((e) => lines.push(`  ◈ ${e.asset}   ${e.confidence}%  [${e.grade}]`));
+        .forEach((e) => lines.push(`  • ${e.asset}  ${e.confidence}% [${e.grade}]`));
     }
     if (sells.length > 0) {
       if (buys.length > 0) lines.push(``);
       lines.push(`🔴 SELL (${sells.length}):`);
       sells
         .sort((a, b) => b.confidence - a.confidence)
-        .forEach((e) => lines.push(`  ◈ ${e.asset}   ${e.confidence}%  [${e.grade}]`));
+        .forEach((e) => lines.push(`  • ${e.asset}  ${e.confidence}% [${e.grade}]`));
     }
     lines.push(``);
     lines.push(`📊 ${buys.length + sells.length} إشارة من ${TOP_10_PAIRS.length} زوج`);
   }
 
-  lines.push(SEP);
+  lines.push(`━━━━━━━━━━━━━━━━━━`);
   lines.push(`🎯 Pocket Option — سوق حقيقي`);
   lines.push(`⚠️ القرار النهائي عليك أنت.`);
   return lines.join("\n");
@@ -1033,14 +665,14 @@ bot.onText(/\/scan/i, async (msg) => {
   if (isNewsTime()) {
     return bot.sendMessage(
       chatId,
-      "📰 تنبيه — وقت أخبار\n═══════════════════\nيُحتمل وجود خبر اقتصادي مؤثر الآن.\n⚠️ تجنب الدخول خلال فترات الأخبار.",
+      "📰 فلتر الأخبار: يُحتمل وجود خبر اقتصادي مؤثر الآن.\n⚠️ تجنب المسح خلال فترات الأخبار.",
       { reply_markup: { inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]] } },
     );
   }
 
   const statusMsg = await bot.sendMessage(
     chatId,
-    `🔍 جاري مسح أقوى 10 أزواج...\n⏳ 0 / ${TOP_10_PAIRS.length} — يرجى الانتظار`,
+    `🔍 جاري مسح أقوى 10 أزواج... 0/${TOP_10_PAIRS.length}\n⏳ يرجى الانتظار (~${Math.ceil(TOP_10_PAIRS.length * 1.2 / 60)} دقيقة)`,
   );
   const statusMsgId = statusMsg.message_id;
 
@@ -1052,7 +684,7 @@ bot.onText(/\/scan/i, async (msg) => {
   } catch (err) {
     log("ERROR", "scan_command_failed", { chatId, error: err.message });
     return bot.editMessageText(
-      "❌ خطأ أثناء المسح\n═══════════════════\nتحقق من مفتاح TwelveData وأعد المحاولة.",
+      "❌ خطأ أثناء المسح. تحقق من مفتاح TwelveData وأعد المحاولة.",
       { chat_id: chatId, message_id: statusMsgId,
         reply_markup: { inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]] } },
     );
@@ -1094,14 +726,14 @@ bot.on("callback_query", async (q) => {
     if (isNewsTime()) {
       return bot.sendMessage(
         chatId,
-        "📰 تنبيه — وقت أخبار\n═══════════════════\nيُحتمل وجود خبر اقتصادي مؤثر الآن.\n⚠️ تجنب الدخول خلال فترات الأخبار.",
+        "📰 فلتر الأخبار: يُحتمل وجود خبر اقتصادي مؤثر الآن.\n⚠️ تجنب المسح خلال فترات الأخبار.",
         { reply_markup: { inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]] } },
       );
     }
 
     const statusMsg = await bot.sendMessage(
       chatId,
-      `🔍 جاري مسح أقوى 10 أزواج...\n⏳ 0 / ${TOP_10_PAIRS.length} — يرجى الانتظار`,
+      `🔍 جاري مسح أقوى 10 أزواج... 0/${TOP_10_PAIRS.length}\n⏳ يرجى الانتظار (~${Math.ceil(TOP_10_PAIRS.length * 1.2 / 60)} دقيقة)`,
     );
     const statusMsgId = statusMsg.message_id;
 
@@ -1113,7 +745,7 @@ bot.on("callback_query", async (q) => {
     } catch (err) {
       log("ERROR", "scan_all_failed", { chatId, error: err.message });
       return bot.editMessageText(
-        "❌ خطأ أثناء المسح\n═══════════════════\nتحقق من مفتاح TwelveData وأعد المحاولة.",
+        "❌ خطأ أثناء المسح. تحقق من مفتاح TwelveData وأعد المحاولة.",
         { chat_id: chatId, message_id: statusMsgId,
           reply_markup: { inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]] } },
       );
@@ -1127,66 +759,7 @@ bot.on("callback_query", async (q) => {
       reply_markup: {
         inline_keyboard: [
           [{ text: "🔄 مسح مجدداً",     callback_data: "scan_all"       }],
-          [{ text: "🔥 صفقة VIP",        callback_data: "vip_trade"      }],
           [{ text: "📊 تحليل زوج فردي", callback_data: "start_analysis" }],
-          [{ text: "🏠 الرئيسية",        callback_data: "home"           }],
-        ],
-      },
-    });
-  }
-
-  // ── VIP Trade
-  if (data === "vip_trade") {
-    if (isNewsTime()) {
-      return bot.sendMessage(
-        chatId,
-        "📰 تنبيه — وقت أخبار\n═══════════════════\nيُحتمل وجود خبر اقتصادي مؤثر الآن.\n⚠️ تجنب الدخول خلال فترات الأخبار.",
-        { reply_markup: { inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]] } },
-      );
-    }
-
-    const statusMsg = await bot.sendMessage(
-      chatId,
-      `🔥 جاري البحث عن صفقة VIP...\n⏳ 0 / ${TOP_10_PAIRS.length} — يرجى الانتظار`,
-    );
-    const statusMsgId = statusMsg.message_id;
-
-    log("INFO", "vip_trade_started", { chatId });
-
-    let best;
-    try {
-      best = await scanVIP(chatId, statusMsgId);
-    } catch (err) {
-      log("ERROR", "vip_trade_failed", { chatId, error: err.message });
-      return bot.editMessageText(
-        "❌ خطأ أثناء البحث عن صفقة VIP\n═══════════════════\nتحقق من مفتاح TwelveData وأعد المحاولة.",
-        { chat_id: chatId, message_id: statusMsgId,
-          reply_markup: { inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]] } },
-      );
-    }
-
-    log("INFO", "vip_trade_done", { chatId, found: !!best, asset: best?.asset });
-
-    const vipText = best
-      ? formatVIPResult(best.asset, best.result)
-      : [
-          "🔥 صفقة VIP",
-          "═══════════════════",
-          "🚫 لا توجد صفقة VIP نظيفة الآن",
-          "",
-          "لم يُعثر على إعداد Grade A أو B نظيف.",
-          "جرّب مجدداً بعد 10–15 دقيقة.",
-          "═══════════════════",
-          "🎯 Pocket Option — سوق حقيقي",
-        ].join("\n");
-
-    return bot.editMessageText(vipText, {
-      chat_id: chatId,
-      message_id: statusMsgId,
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "🔥 إعادة البحث",    callback_data: "vip_trade"      }],
-          [{ text: "🔍 مسح الأزواج",    callback_data: "scan_all"       }],
           [{ text: "🏠 الرئيسية",        callback_data: "home"           }],
         ],
       },
@@ -1198,22 +771,18 @@ bot.on("callback_query", async (q) => {
     const asset = data.replace("asset_", "");
 
     if (!ALLOWED_ASSETS.includes(asset)) {
-      return bot.sendMessage(
-        chatId,
-        "⚠️ الزوج غير مدعوم\n═══════════════════\nهذا الزوج غير متاح في قاعدة البيانات.",
-        {
-          reply_markup: {
-            inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]],
-          },
+      return bot.sendMessage(chatId, "⚠️ هذا الزوج غير مدعوم.", {
+        reply_markup: {
+          inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]],
         },
-      );
+      });
     }
 
     // News filter
     if (isNewsTime()) {
       return bot.sendMessage(
         chatId,
-        "📰 تنبيه — وقت أخبار\n═══════════════════\nيُحتمل وجود خبر اقتصادي مؤثر الآن.\n⚠️ NO TRADE — انتظر 10 دقائق وأعد المحاولة.",
+        "📰 فلتر الأخبار: يُحتمل وجود خبر اقتصادي مؤثر الآن.\n⚠️ NO TRADE — انتظر 10 دقائق وأعد المحاولة.",
         {
           reply_markup: {
             inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]],
@@ -1226,7 +795,7 @@ bot.on("callback_query", async (q) => {
     if (isCandleEdge()) {
       return bot.sendMessage(
         chatId,
-        "⏱️ تنبيه — حافة الشمعة\n═══════════════════\nأنت في بداية أو نهاية الشمعة الحالية.\nانتظر دقيقتين وأعد التحليل للحصول على إشارة أدق.",
+        "⏱️ أنت في بداية أو نهاية الشمعة. انتظر دقيقتين وأعد التحليل للحصول على إشارة أدق.",
         {
           reply_markup: {
             inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]],
@@ -1238,7 +807,7 @@ bot.on("callback_query", async (q) => {
     sessions[chatId].asset = asset;
     log("INFO", "analysis_requested", { chatId, asset });
 
-    await bot.sendMessage(chatId, `⌛ جاري تحليل ${asset}...\n⏳ يرجى الانتظار`);
+    await bot.sendMessage(chatId, `⌛ جاري تحليل ${asset}...`);
 
     let result;
     try {
@@ -1247,7 +816,7 @@ bot.on("callback_query", async (q) => {
       log("ERROR", "analysis_failed", { chatId, asset, error: err.message });
       return bot.sendMessage(
         chatId,
-        "❌ خطأ في التحليل\n═══════════════════\nتعذّر جلب بيانات السوق.\nتحقق من مفتاح TwelveData أو حاول لاحقاً.",
+        "❌ خطأ في جلب بيانات السوق. تحقق من مفتاح TwelveData أو حاول لاحقاً.",
         {
           reply_markup: {
             inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]],
@@ -1264,12 +833,9 @@ bot.on("callback_query", async (q) => {
       grade: result.grade,
     });
 
-    const sessionLine = (!result.noTrade && result.sessionWarning)
-      ? `\n${result.sessionWarning}` : "";
-    const SEP = "═══════════════════";
     const replyText = result.noTrade
-      ? `📊 تحليل — ${asset}\n${SEP}\nالنتيجة: ⚪ لا توجد صفقة\n\n📌 السبب:\n${result.reason}\n\n${SEP}\n🎯 Pocket Option — سوق حقيقي\n⚠️ القرار النهائي عليك أنت.`
-      : `📊 تحليل — ${asset}\n${SEP}\nالنتيجة: ${result.signal}\n\n🎯 الثقة: ${result.confidence}%   🏅 التقييم: ${result.grade}\n⏱️ مدة الصفقة: ${result.expiry}${sessionLine}\n\n📌 الأسباب:\n${result.reason}\n\n${buildChecklist(result)}\n\n${SEP}\n🎯 Pocket Option — سوق حقيقي\n⚠️ القرار النهائي عليك أنت.`;
+      ? `📊 نتيجة التحليل — ${asset}\n\nالنتيجة: ${result.signal}\n\n📌 السبب: ${result.reason}\n\n━━━━━━━━━━━━━━━━━━\n🎯 المنصة: Pocket Option — سوق حقيقي\n⚠️ القرار النهائي عليك أنت.`
+      : `📊 نتيجة التحليل — ${asset}\n\nالنتيجة: ${result.signal}\n\n🎯 نسبة الثقة: ${result.confidence}%\n🏅 التقييم: ${result.grade}\n\n✅ الأسباب: ${result.reason}\n\n━━━━━━━━━━━━━━━━━━\n🎯 المنصة: Pocket Option — سوق حقيقي\n⚠️ القرار النهائي عليك أنت. لا تعتمد على إشارة واحدة.`;
 
     return bot.sendMessage(chatId, replyText, {
       reply_markup: {
