@@ -14,7 +14,7 @@ const bot = new TelegramBot(token, { polling: true });
 
 const sessions = {};
 
-function parisTimeStr(now: Date = new Date()): string {
+function parisTimeStr(now = new Date()) {
   return now.toLocaleTimeString("fr-FR", {
     timeZone: "Europe/Paris",
     hour: "2-digit",
