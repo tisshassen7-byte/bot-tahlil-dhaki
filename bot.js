@@ -47,7 +47,7 @@ const HIGH_IMPACT_UTC_RANGES = [
 const MIN_CONFIDENCE = 57;
 const ANALYSIS_INTERVAL = "5min";
 
-function isOwner(chatId: number): boolean {
+function isOwner(chatId) {
   return chatId === OWNER_ID;
 }
 
