@@ -12,7 +12,7 @@ if (!OWNER_ID || isNaN(OWNER_ID)) throw new Error("OWNER_ID غير موجود ف
 
 const bot = new TelegramBot(token, { polling: true });
 
-const sessions: Record<number, { asset?: string }> = {};
+const sessions = {};
 
 function parisTimeStr(now: Date = new Date()): string {
   return now.toLocaleTimeString("fr-FR", {
