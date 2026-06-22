@@ -403,6 +403,11 @@ async function analyze(symbol) {
     sellReasons.push(`${trendConf.downCount}/5 شموع مغلقة هابطة`);
   }
 
+  // ── تصفية الترند المعتدل: إذا الشموع الأخيرة تخالف الترند المعتدل → خصم
+  // الترند القوي (strongUp/Down) لا يحتاج هذا الشرط لأنه مؤكد بـ4 EMAs
+  if (modUp   && trendConf.upCount   < 3) buyScore  -= 12;
+  if (modDown && trendConf.downCount < 3) sellScore -= 12;
+
   // ── [7] دعم ومقاومة
   if (!nearResistance) {
     buyScore  += 10;
@@ -538,17 +543,12 @@ function suggestedEntry() {
   const secs = paris.getSeconds();
   const posInCandle = mins % 5; // 0..4: موقع داخل الشمعة الحالية
 
-  // أول دقيقتين من الشمعة → دخول فوري
-  if (posInCandle === 0 || (posInCandle === 1 && secs < 30)) {
-    return { label: "الآن 🟢", waitMins: 0 };
-  }
-
-  // انتظر فتح الشمعة التالية
-  const minsToNext = 5 - posInCandle;
+  // دائماً انتظر فتح الشمعة التالية — لا دخول فوري أبداً
+  const minsToNext = posInCandle === 0 ? 5 : 5 - posInCandle;
   const next = new Date(paris.getTime() + minsToNext * 60 * 1000);
   const timeStr = `${String(next.getHours()).padStart(2, "0")}:${String(next.getMinutes()).padStart(2, "0")}`;
   const waitLabel = minsToNext === 1 ? "دقيقة واحدة" : `${minsToNext} دقائق`;
-  return { label: `${timeStr} (خلال ${waitLabel}) ⏳`, waitMins: minsToNext };
+  return { label: `${timeStr} ⏳ (خلال ${waitLabel})`, waitMins: minsToNext };
 }
 
 // ─── /start ───────────────────────────────────────────────────────────────────
