@@ -70,7 +70,7 @@ const HIGH_IMPACT_UTC_RANGES = [
   { h: 18, m: 0, endH: 18, endM: 5 }, // إغلاق لندن
 ];
 
-const MIN_CONFIDENCE = 63; // حد أدنى للثقة (مرفوع لتصفية الإشارات الضعيفة)
+const MIN_CONFIDENCE = 58; // حد أدنى للثقة (رُفع بخطوة صغيرة فقط عن الأصلي 57)
 const ANALYSIS_INTERVAL = "5min"; // إطار زمني ثابت للتحليل
 
 // ─── Logging ──────────────────────────────────────────────────────────────────
@@ -341,13 +341,9 @@ async function analyze(symbol) {
     sellScore -= 8;
   }
 
-  // ── [2] RSI — نطاق مُعدَّل (أضيق في الترند المعتدل لتصفية التشبع)
-  const rsiBuyOk  = strongUp ? (r >= 35 && r <= 80)
-                  : anyUp    ? (r >= 42 && r <= 72)
-                  :            (r >= 48 && r <= 65);
-  const rsiSellOk = strongDown ? (r >= 20 && r <= 65)
-                  : anyDown    ? (r >= 28 && r <= 58)
-                  :              (r >= 35 && r <= 52);
+  // ── [2] RSI — نطاقات أصلية واسعة (لا تُضيَّق في الترند)
+  const rsiBuyOk  = anyUp   ? (r >= 38 && r <= 90) : (r >= 45 && r <= 72);
+  const rsiSellOk = anyDown ? (r >= 10 && r <= 62) : (r >= 28 && r <= 55);
   if (rsiBuyOk) {
     buyScore += 18;
     buyReasons.push(`RSI=${r.toFixed(0)} مناسب شراء`);
@@ -356,46 +352,45 @@ async function analyze(symbol) {
     sellScore += 18;
     sellReasons.push(`RSI=${r.toFixed(0)} مناسب بيع`);
   }
-  // عقوبة تشبع حاد فقط في غياب الترند
-  if (r > 85 && !anyUp)   buyScore  -= 12;
-  if (r < 15 && !anyDown) sellScore -= 12;
+  // عقوبة تشبع حاد فقط في غياب الترند (أصلية)
+  if (r > 90 && !anyUp)   buyScore  -= 15;
+  if (r < 10 && !anyDown) sellScore -= 15;
 
-  // ── [3] ميل EMA9 (زخم آني — تأكيد إضافي)
+  // ── [3] ميل EMA9 — مكافأة إضافية صغيرة فقط (لا عقوبة)
   if (ema9Slope > 0) {
-    buyScore  += 6;
+    buyScore  += 5;
     buyReasons.push("EMA9 صاعد");
   } else if (ema9Slope < 0) {
-    sellScore += 6;
+    sellScore += 5;
     sellReasons.push("EMA9 هابط");
   }
 
-  // ── [4] الشمعة المغلقة الأخيرة — تأكيد وليس شرطاً
-  // قوية موافقة → مكافأة | قوية مخالفة → عقوبة خفيفة | ضعيفة → مكافأة أصغر
+  // ── [4] الشمعة المغلقة الأخيرة — تأكيد وليس شرطاً، بدون أي عقوبة
+  // شمعة قوية = +15 (نفس الأصل) | شمعة ضعيفة = +5 مكافأة إضافية فقط
   if (candle.bullish) {
-    buyScore  += 12;
-    buyReasons.push("شمعة مغلقة صاعدة قوية ✓");
-    if (!anyUp) sellScore -= 6;          // عقوبة خفيفة على عكس الترند
+    buyScore  += 15;
+    buyReasons.push("شمعة مغلقة صاعدة قوية");
   } else if (candle.bullishWeak) {
     buyScore  += 5;
     buyReasons.push("شمعة مغلقة صاعدة");
-  } else if (candle.bearish) {
-    sellScore += 12;
-    sellReasons.push("شمعة مغلقة هابطة قوية ✓");
-    if (!anyDown) buyScore -= 6;
+  }
+  if (candle.bearish) {
+    sellScore += 15;
+    sellReasons.push("شمعة مغلقة هابطة قوية");
   } else if (candle.bearishWeak) {
     sellScore += 5;
     sellReasons.push("شمعة مغلقة هابطة");
   }
-  // شمعة محايدة أو دوجي → لا مكافأة ولا عقوبة
+  // شمعة مخالفة أو محايدة → لا عقوبة (كما في الأصل)
 
-  // ── [5] مكافأة الزخم المتوافق (ترند + RSI + شمعة تتفق معاً)
+  // ── [5] مكافأة الزخم المتوافق: ترند + RSI + شمعة (أصلية + تشمل الضعيفة)
   if (anyUp   && rsiBuyOk  && (candle.bullish || candle.bullishWeak)) {
-    buyScore  += 8;
-    buyReasons.push("زخم متوافق ثلاثي");
+    buyScore  += 7;
+    buyReasons.push("زخم متوافق");
   }
   if (anyDown && rsiSellOk && (candle.bearish || candle.bearishWeak)) {
-    sellScore += 8;
-    sellReasons.push("زخم متوافق ثلاثي");
+    sellScore += 7;
+    sellReasons.push("زخم متوافق");
   }
 
   // ── [6] تأكيد متعدد الشموع المغلقة (3 من 5 مغلقة)
@@ -443,9 +438,8 @@ async function analyze(symbol) {
 
   if (dominantScore < MIN_CONFIDENCE)
     return noTrade(`⚪ الثقة غير كافية (${dominantScore}%) — الجودة أهم من الكمية`);
-  // فجوة رُفعت من 6→10 لتصفية الإشارات المتضاربة
-  if (dominantScore - opposite < 10)
-    return noTrade("⚪ إشارة متضاربة: لا أفضلية كافية بين BUY و SELL");
+  if (dominantScore - opposite < 7)
+    return noTrade("⚪ إشارة متعارضة: لا أفضلية واضحة بين BUY و SELL");
 
   const confidence = Math.min(93, dominantScore);
   return {
