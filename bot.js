@@ -471,59 +471,139 @@ function noTrade(reason) {
   };
 }
 
-// ─── Welcome Image ────────────────────────────────────────────────────────────
-// صورة ترحيبية بأسلوب سايبر-تداول — استبدلها برابط صورتك الخاصة إن أردت
-const WELCOME_IMAGE_URL =
-  "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=1280&q=80";
+// ─── Market Status ────────────────────────────────────────────────────────────
+function marketStatus() {
+  const now      = new Date();
+  const utcDay   = now.getUTCDay();               // 0=أحد, 1=اثنين, ..., 5=جمعة, 6=سبت
+  const utcTotal = now.getUTCHours() * 60 + now.getUTCMinutes();
+
+  // مغلق: السبت كاملاً | الأحد قبل 22:00 UTC | الجمعة بعد 22:00 UTC
+  if (utcDay === 6)                         return { open: false, label: "🔴  مغلق — عطلة نهاية الأسبوع" };
+  if (utcDay === 0 && utcTotal < 22 * 60)   return { open: false, label: "🔴  مغلق — يفتح الأحد 22:00 UTC" };
+  if (utcDay === 5 && utcTotal >= 22 * 60)  return { open: false, label: "🔴  مغلق — عطلة نهاية الأسبوع" };
+
+  // جلسات نشطة
+  let session = "جلسة مفتوحة";
+  if (utcTotal >= 22 * 60 || utcTotal < 8 * 60)      session = "جلسة طوكيو 🇯🇵";
+  else if (utcTotal >= 7 * 60 && utcTotal < 16 * 60)  session = "جلسة لندن 🇬🇧";
+  else if (utcTotal >= 13 * 60 && utcTotal < 22 * 60) session = "جلسة نيويورك 🇺🇸";
+  return { open: true, label: `🟢  مفتوح — ${session}` };
+}
 
 // ─── UI Helpers ───────────────────────────────────────────────────────────────
+
+// شريط الثقة المرئي (10 خانات)
+function confBar(pct) {
+  const n = Math.round(pct / 10);
+  return "█".repeat(n) + "░".repeat(10 - n);
+}
+
+// عنوان الإشارة حسب التقييم
+function signalHeader(grade) {
+  if (grade === "A") return "⭐ إشارة قوية";
+  if (grade === "B") return "✨ إشارة جيدة";
+  return "📊 إشارة مقبولة";
+}
+
+// تنسيق الأسباب كنقاط
+function formatReasons(reasonStr) {
+  return reasonStr
+    .split("✦")
+    .map((r) => `•  ${r.trim()}`)
+    .filter((r) => r.length > 3)
+    .join("\n");
+}
+
+// الصفحة الرئيسية — الترحيب
 function sendWelcome(chatId) {
-  const caption = [
-    "📡 *رادار السوق*",
-    "━━━━━━━━━━━━━━━━━━",
-    "منصة تحليل الفوركس الاحترافية",
-    "سوق حقيقي · توقيت فرنسا · خاص بك",
-    "━━━━━━━━━━━━━━━━━━",
-    "⚠️ للتحليل فقط — القرار النهائي عليك أنت.",
+  const timeStr = parisTimeStr();
+  const status  = marketStatus();
+
+  const text = [
+    "📡  <b>رادار السوق</b>",
+    "<i>Tiss-Hassen</i>",
+    "",
+    "┌────────────────────────┐",
+    "│                        │",
+    "│   مرحباً بك في         │",
+    "│   <b>رادار السوق</b>       │",
+    "│   <i>Tiss-Hassen</i>   │",
+    "│                        │",
+    `│  🕐  <b>${timeStr}</b>  (باريس)  │`,
+    `│  ${status.label}  │`,
+    "│                        │",
+    "└────────────────────────┘",
+    "",
+    "<b>تحليل احترافي للسوق الحقيقي فقط</b>",
+    "",
+    "✅   سوق حقيقي فقط",
+    "🚫   بدون مارتيجال",
+    "🧠   <b>تحليل يعتمد على:</b>",
+    "      الأخبار · الاتجاه · EMA · RSI",
+    "      الدعم والمقاومة",
+    "",
+    "━━━━━━━━━━━━━━━━━━━━━━━",
+    "⚠️  <i>للتحليل فقط — القرار النهائي عليك أنت.</i>",
   ].join("\n");
 
-  return bot.sendPhoto(chatId, WELCOME_IMAGE_URL, {
-    caption,
-    parse_mode: "Markdown",
+  return bot.sendMessage(chatId, text, {
+    parse_mode: "HTML",
     reply_markup: {
       inline_keyboard: [
-        [{ text: "▶️ ابدأ الآن", callback_data: "show_menu" }],
+        [{ text: "🚀  ابدأ التحليل", callback_data: "show_menu" }],
+        [{ text: "💡  مميزات البوت", callback_data: "features" }],
       ],
     },
-  }).catch(() =>
-    // إذا فشل تحميل الصورة، أرسل النص مباشرة
-    bot.sendMessage(chatId, caption, {
-      parse_mode: "Markdown",
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "▶️ ابدأ الآن", callback_data: "show_menu" }],
-        ],
-      },
-    }),
-  );
+  });
 }
 
+// صفحة اختيار نوع السوق
 function mainMenu(chatId) {
-  return bot.sendMessage(
-    chatId,
-    "📡 *رادار السوق* — القائمة الرئيسية",
-    {
-      parse_mode: "Markdown",
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "📊 تحليل زوج فردي", callback_data: "start_analysis" }],
-        ],
-      },
+  const text = [
+    "📡  <b>رادار السوق</b>  |  <i>Tiss-Hassen</i>",
+    "━━━━━━━━━━━━━━━━━━━━━━━",
+    "",
+    "<b>اختر نوع السوق 📊</b>",
+    "",
+    "┌────────────────────────┐",
+    "│  🌐  <b>سوق حقيقي</b>          │",
+    "│  تحليل السوق الحقيقي   │",
+    "│                   ✅   │",
+    "└────────────────────────┘",
+    "",
+    "┌────────────────────────┐",
+    "│  🔴  <b>OTC  سوق</b>          │",
+    "│  غير متاح              │",
+    "│                   ❌   │",
+    "└────────────────────────┘",
+    "",
+    "ℹ️  <i>البوت يعمل على السوق الحقيقي فقط</i>",
+    "<i>جميع الإشارات من بيانات حقيقية</i>",
+  ].join("\n");
+
+  return bot.sendMessage(chatId, text, {
+    parse_mode: "HTML",
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "🌐  سوق حقيقي  ✅", callback_data: "start_analysis" }],
+        [{ text: "🔴  OTC — غير متاح  ❌", callback_data: "otc_unavailable" }],
+        [{ text: "🏠  الصفحة الرئيسية", callback_data: "home" }],
+      ],
     },
-  );
+  });
 }
 
+// صفحة اختيار الزوج
 function assetMenu(chatId) {
+  const text = [
+    "📡  <b>رادار السوق</b>  |  <i>Tiss-Hassen</i>",
+    "━━━━━━━━━━━━━━━━━━━━━━━",
+    "",
+    "<b>اختر الزوج 💰</b>",
+    "",
+    "⬇️  اختر الزوج الذي تريد تحليله:",
+  ].join("\n");
+
   const rows = [];
   for (let i = 0; i < ALLOWED_ASSETS.length; i += 2) {
     rows.push(
@@ -533,9 +613,46 @@ function assetMenu(chatId) {
       })),
     );
   }
-  rows.push([{ text: "🏠 الرئيسية", callback_data: "home" }]);
-  return bot.sendMessage(chatId, "💱 اختر الزوج (سوق حقيقي فقط):", {
+  rows.push([{ text: "← رجوع", callback_data: "show_menu" }]);
+
+  return bot.sendMessage(chatId, text, {
+    parse_mode: "HTML",
     reply_markup: { inline_keyboard: rows },
+  });
+}
+
+// صفحة مميزات البوت
+function showFeatures(chatId) {
+  const text = [
+    "📡  <b>رادار السوق</b>  |  <i>Tiss-Hassen</i>",
+    "━━━━━━━━━━━━━━━━━━━━━━━",
+    "",
+    "<b>💡 مميزات البوت</b>",
+    "",
+    "🛡  سوق حقيقي فقط",
+    "📈  تحليل احترافي متعدد المؤشرات",
+    "⏱  دخول بعد دقيقة واحدة دائماً",
+    "📰  فلتر الأخبار الاقتصادية",
+    "📊  RSI + EMA + الاتجاه",
+    "📉  الدعم والمقاومة",
+    "❌  بدون مارتيجال",
+    "🔔  إشارات دقيقة وموثوقة",
+    "💡  قرارات ذكية في الوقت المناسب",
+    "🌍  توقيت باريس الرسمي",
+    "🔒  خاص بك — خصوصية تامة",
+    "",
+    "━━━━━━━━━━━━━━━━━━━━━━━",
+    "<i>⚠️ للتحليل فقط — القرار النهائي عليك أنت.</i>",
+  ].join("\n");
+
+  return bot.sendMessage(chatId, text, {
+    parse_mode: "HTML",
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "🚀  ابدأ التحليل", callback_data: "start_analysis" }],
+        [{ text: "🏠  الصفحة الرئيسية", callback_data: "home" }],
+      ],
+    },
   });
 }
 
@@ -576,88 +693,237 @@ bot.on("callback_query", async (q) => {
   await bot.answerCallbackQuery(q.id).catch(() => {});
   if (!sessions[chatId]) sessions[chatId] = {};
 
-  if (data === "home" || data === "show_menu") return mainMenu(chatId);
+  // ── التنقل الرئيسي
+  if (data === "home")           return sendWelcome(chatId);
+  if (data === "show_menu")      return mainMenu(chatId);
   if (data === "start_analysis") return assetMenu(chatId);
+  if (data === "features")       return showFeatures(chatId);
 
-  // ── Asset Selection → Analysis
+  // ── OTC غير متاح
+  if (data === "otc_unavailable") {
+    return bot.sendMessage(chatId, [
+      "📡  <b>رادار السوق</b>  |  <i>Tiss-Hassen</i>",
+      "━━━━━━━━━━━━━━━━━━━━━━━",
+      "",
+      "❌  <b>OTC غير متاح</b>",
+      "",
+      "البوت يعمل على السوق الحقيقي فقط.",
+      "اختر السوق الحقيقي للمتابعة.",
+    ].join("\n"), {
+      parse_mode: "HTML",
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "🌐  سوق حقيقي  ✅", callback_data: "start_analysis" }],
+          [{ text: "🏠  الصفحة الرئيسية", callback_data: "home" }],
+        ],
+      },
+    });
+  }
+
+  // ── اختيار الزوج → التحليل
   if (data.startsWith("asset_")) {
     const asset = data.replace("asset_", "");
 
     if (!ALLOWED_ASSETS.includes(asset)) {
-      return bot.sendMessage(chatId, "⚠️ هذا الزوج غير مدعوم.", {
+      return bot.sendMessage(chatId, [
+        "📡  <b>رادار السوق</b>  |  <i>Tiss-Hassen</i>",
+        "━━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+        "⚠️  هذا الزوج غير مدعوم.",
+      ].join("\n"), {
+        parse_mode: "HTML",
         reply_markup: {
-          inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]],
+          inline_keyboard: [
+            [{ text: "🔄  تحليل زوج آخر", callback_data: "start_analysis" }],
+            [{ text: "🏠  الصفحة الرئيسية", callback_data: "home" }],
+          ],
         },
       });
     }
 
-    // News filter
+    // فلتر الأخبار
     if (isNewsTime()) {
-      return bot.sendMessage(
-        chatId,
-        "📰 فلتر الأخبار: يُحتمل وجود خبر اقتصادي مؤثر الآن.\n⚠️ NO TRADE — انتظر 10 دقائق وأعد المحاولة.",
-        {
-          reply_markup: {
-            inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]],
-          },
+      return bot.sendMessage(chatId, [
+        "📡  <b>رادار السوق</b>  |  <i>Tiss-Hassen</i>",
+        "━━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+        "┌────────────────────────┐",
+        "│  📰  <b>فلتر الأخبار</b>     │",
+        "│      ⚪ NO TRADE        │",
+        "└────────────────────────┘",
+        "",
+        "⚠️  يُحتمل وجود خبر اقتصادي مؤثر الآن.",
+        "انتظر <b>10 دقائق</b> وأعد المحاولة.",
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━━",
+        "<i>⚠️ للتحليل فقط — القرار النهائي عليك أنت.</i>",
+      ].join("\n"), {
+        parse_mode: "HTML",
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "🔄  تحليل زوج آخر", callback_data: "start_analysis" }],
+            [{ text: "🏠  الصفحة الرئيسية", callback_data: "home" }],
+          ],
         },
-      );
+      });
     }
 
-    // Candle edge
+    // حافة الشمعة
     if (isCandleEdge()) {
-      return bot.sendMessage(
-        chatId,
-        "⏱️ أنت في بداية أو نهاية الشمعة. انتظر دقيقتين وأعد التحليل للحصول على إشارة أدق.",
-        {
-          reply_markup: {
-            inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]],
-          },
+      return bot.sendMessage(chatId, [
+        "📡  <b>رادار السوق</b>  |  <i>Tiss-Hassen</i>",
+        "━━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+        "┌────────────────────────┐",
+        "│  ⏱  <b>توقيت غير مثالي</b>   │",
+        "└────────────────────────┘",
+        "",
+        "أنت في بداية أو نهاية الشمعة الحالية.",
+        "انتظر <b>دقيقتين</b> وأعد التحليل للحصول على إشارة أدق.",
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━━",
+        "<i>⚠️ للتحليل فقط — القرار النهائي عليك أنت.</i>",
+      ].join("\n"), {
+        parse_mode: "HTML",
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "🔄  تحليل زوج آخر", callback_data: "start_analysis" }],
+            [{ text: "🏠  الصفحة الرئيسية", callback_data: "home" }],
+          ],
         },
-      );
+      });
     }
 
     sessions[chatId].asset = asset;
     log("INFO", "analysis_requested", { chatId, asset });
 
-    await bot.sendMessage(chatId, `⌛ جاري تحليل ${asset}...`);
+    // رسالة "جاري التحليل"
+    await bot.sendMessage(chatId, [
+      "📡  <b>رادار السوق</b>  |  <i>Tiss-Hassen</i>",
+      "━━━━━━━━━━━━━━━━━━━━━━━",
+      "",
+      `⏳  <b>جاري التحليل...</b>  |  ${asset}`,
+      "",
+      "🔍  جاري فحص الأسواق والبحث عن أفضل فرصة",
+      "",
+      "✅   تحليل الأخبار",
+      "✅   تحديد الاتجاه",
+      "✅   تحليل RSI",
+      "✅   تحليل EMA",
+      "✅   تحليل الدعم والمقاومة",
+      "🔄   تقييم الفرصة...",
+      "",
+      "┌────────────────────────┐",
+      "│ ⏱  سيتم إرسال النتيجة  │",
+      "│    خلال ثوانٍ قليلة    │",
+      "│ الدخول بعد دقيقة واحدة │",
+      "└────────────────────────┘",
+    ].join("\n"), { parse_mode: "HTML" });
 
     let result;
     try {
       result = await analyze(asset);
     } catch (err) {
       log("ERROR", "analysis_failed", { chatId, asset, error: err.message });
-      return bot.sendMessage(
-        chatId,
-        "❌ خطأ في جلب بيانات السوق. تحقق من مفتاح TwelveData أو حاول لاحقاً.",
-        {
-          reply_markup: {
-            inline_keyboard: [[{ text: "🏠 الرئيسية", callback_data: "home" }]],
-          },
+      return bot.sendMessage(chatId, [
+        "📡  <b>رادار السوق</b>  |  <i>Tiss-Hassen</i>",
+        "━━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+        "❌  <b>خطأ في جلب بيانات السوق</b>",
+        "",
+        "تحقق من مفتاح TwelveData أو حاول لاحقاً.",
+      ].join("\n"), {
+        parse_mode: "HTML",
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "🔄  تحليل زوج آخر", callback_data: "start_analysis" }],
+            [{ text: "🏠  الصفحة الرئيسية", callback_data: "home" }],
+          ],
         },
-      );
+      });
     }
 
     log("INFO", "analysis_done", {
-      chatId,
-      asset,
+      chatId, asset,
       signal: result.signal,
       confidence: result.confidence,
       grade: result.grade,
     });
 
-    const entry = suggestedEntry();
-    const replyText = result.noTrade
-      ? `📊 نتيجة التحليل — ${asset}\n\nالنتيجة: ${result.signal}\n\n📌 السبب: ${result.reason}\n\n━━━━━━━━━━━━━━━━━━\n🎯 المنصة: Pocket Option — سوق حقيقي\n⚠️ القرار النهائي عليك أنت.`
-      : `📊 نتيجة التحليل — ${asset}\n\nالنتيجة: ${result.signal}\n⏰ وقت الدخول: ${entry.label}\n\n🎯 نسبة الثقة: ${result.confidence}%\n🏅 التقييم: ${result.grade}\n\n✅ الأسباب: ${result.reason}\n\n━━━━━━━━━━━━━━━━━━\n🎯 المنصة: Pocket Option — سوق حقيقي\n⚠️ القرار النهائي عليك أنت. لا تعتمد على إشارة واحدة.`;
+    const btns = [
+      [{ text: "🔄  تحليل زوج آخر", callback_data: "start_analysis" }],
+      [{ text: "🏠  الصفحة الرئيسية", callback_data: "home" }],
+    ];
 
-    return bot.sendMessage(chatId, replyText, {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "🔁 تحليل زوج آخر", callback_data: "start_analysis" }],
-          [{ text: "🏠 الرئيسية", callback_data: "home" }],
-        ],
-      },
+    // ── NO TRADE
+    if (result.noTrade) {
+      const noTradeText = [
+        "📡  <b>رادار السوق</b>  |  <i>Tiss-Hassen</i>",
+        "━━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+        "⚠️  <b>لا توجد فرصة واضحة</b>",
+        "",
+        "┌────────────────────────┐",
+        `│      ⚪ <b>NO TRADE</b>       │`,
+        `│      <b>${asset}</b>`,
+        "│                        │",
+        "│   درجة الثقة           │",
+        `│   ${confBar(0)}  ─  │`,
+        "│                        │",
+        "│   📊 التقييم:  ─       │",
+        "└────────────────────────┘",
+        "",
+        "📌  <b>السبب:</b>",
+        formatReasons(result.reason),
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━━",
+        "<i>⚠️ للتحليل فقط — القرار النهائي عليك أنت.</i>",
+      ].join("\n");
+
+      return bot.sendMessage(chatId, noTradeText, {
+        parse_mode: "HTML",
+        reply_markup: { inline_keyboard: btns },
+      });
+    }
+
+    // ── BUY / SELL
+    const entry      = suggestedEntry();
+    const isBuy      = result.signal.includes("BUY");
+    const signalIcon = isBuy ? "🟢" : "🔴";
+    const signalWord = isBuy ? "BUY" : "SELL";
+    const header     = signalHeader(result.grade);
+    const bar        = confBar(result.confidence);
+    const medalIcon  = result.grade === "A" ? "🥇" : result.grade === "B" ? "🥈" : "🥉";
+
+    const tradeText = [
+      "📡  <b>رادار السوق</b>  |  <i>Tiss-Hassen</i>",
+      "━━━━━━━━━━━━━━━━━━━━━━━",
+      "",
+      `${header}`,
+      "",
+      "┌────────────────────────┐",
+      `│  ${signalIcon}  <b>${signalWord}</b>                │`,
+      `│  <b>${asset}</b>`,
+      "│                        │",
+      "│   درجة الثقة           │",
+      `│   ${bar}  ${result.confidence}%  │`,
+      "│                        │",
+      `│  ${medalIcon} التقييم:  <b>${result.grade}</b>          │`,
+      "└────────────────────────┘",
+      "",
+      `⏰  <b>وقت الدخول:</b>   ${entry.label}`,
+      "⏱  <b>المدة المقترحة:</b>  5 دقائق",
+      "",
+      "📌  <b>الأسباب:</b>",
+      formatReasons(result.reason),
+      "",
+      "━━━━━━━━━━━━━━━━━━━━━━━",
+      "<i>⚠️ للتحليل فقط — القرار النهائي عليك أنت.</i>",
+    ].join("\n");
+
+    return bot.sendMessage(chatId, tradeText, {
+      parse_mode: "HTML",
+      reply_markup: { inline_keyboard: btns },
     });
   }
 });
